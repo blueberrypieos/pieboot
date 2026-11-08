@@ -738,6 +738,31 @@ convert_device(struct machine *m, const struct fdt_node *n, struct adt_node *par
 		adt_set(a, "pieboot,dma-ranges", dr, ndr * sizeof(dr[0]));
 	}
 
+	const struct fdt_node *aliases = fdt_path(&m->fdt, "/aliases");
+	for (const struct fdt_prop *alias = aliases ? aliases->props : NULL; alias; alias = alias->next) {
+		const char *prefix = !strncmp(alias->name, "i2c", 3) ? "i2c" :
+		    !strncmp(alias->name, "spi", 3) ? "spi" :
+		    !strncmp(alias->name, "serial", 6) ? "serial" : NULL;
+		if (!prefix || !alias->len || alias->val[alias->len - 1] != 0 ||
+		    fdt_path(&m->fdt, (const char *)alias->val) != n) {
+			continue;
+		}
+		unsigned number = 0;
+		const char *digit = alias->name + strlen(prefix);
+		if (!*digit) {
+			continue;
+		}
+		while (*digit >= '0' && *digit <= '9' && number < 1000) {
+			number = number * 10 + (unsigned)(*digit++ - '0');
+		}
+		if (!*digit && number < 1000) {
+			char property[32];
+			snprintf(property, sizeof(property),
+			    !strcmp(prefix, "serial") ? "pieboot,%s-index" : "pieboot,%s-bus", prefix);
+			adt_set_u32(a, property, number);
+		}
+	}
+
 	uint32_t phandle = node_phandle(m, n);
 	adt_set_u32(a, "AAPL,phandle", phandle);
 	if (n == m->uart) {

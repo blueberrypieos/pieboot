@@ -112,6 +112,9 @@ Other details of the converted tree:
   (the BCM2712 MIP's MSI doorbell is a PCI address): all of its `reg`
   ranges as `{u64 address on the parent bus, u64 size}`. `reg` keeps only
   those the CPU can reach.
+- **`pieboot,i2c-bus`**, **`pieboot,spi-bus`** and **`pieboot,serial-index`**,
+  on a device that an FDT `/aliases` entry `i2cN`, `spiN` or `serialN`
+  names: N, as a u32. The kernel names buses and serial ports by them.
 - **Panic region:** the top 512 KB of the last RAM range is kept out of
   the kernel's memory and published as `/pram` `reg` with
   `/chosen/embedded-panic-log-size`, where xnu looks for it. The kernel
