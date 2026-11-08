@@ -6,7 +6,7 @@
  *         boot-args) arrives as the initrd: either a bare Mach-O kernel or
  *         a pieboot bundle (see mkbundle.py), which may hold one kernel per
  *         SoC; select_kernel() picks one by the device tree and the CPU.
- * Output: the kernel entered at EL1, MMU off, x0 = boot_args, with an Apple
+ * Output: the kernel entered at EL1, MMU off, x0 = boot_args, with an xnu
  *         device tree describing the machine.
  *
  * Physical layout, as low in the first RAM range as it fits above this
@@ -14,7 +14,7 @@
  *
  *   physBase                     <- virtBase (kernel VA rounded down to 2MB)
  *   kernel segments              at physBase + (vmaddr - virtBase)
- *   Apple device tree
+ *   xnu device tree
  *   RAM disk (optional)
  *   boot_args
  *   topOfKernelData; the kernel owns everything up to the end of RAM,
@@ -147,9 +147,6 @@ open_payload(const uint8_t *p, size_t size, struct payload *out)
 			out->bootargs_size = e->size;
 		}
 	}
-	if (!out->kernel && !out->nkernels) {
-		panic_nokernel("bundle has no kernel");
-	}
 }
 
 /* --- machine description ----------------------------------------------------- */
@@ -187,7 +184,7 @@ struct pmap_io_range {
 };
 #define VM_WIMG_WCOMB           0x6     /* write-combined: normal memory, not cached */
 
-/* The panic region at the top of RAM: iBoot's kMemoryRegion_Panic. */
+/* The panic region at the top of RAM, published as /pram. */
 #define PANIC_REGION_SIZE       (512 * 1024)
 /* How long a previous boot's panic log stays on the screen. */
 #define PANIC_PAUSE_SECONDS     15U
@@ -210,9 +207,9 @@ struct panic_header {
 /*
  * Clean and invalidate the data cache lines of [start, end) to the point of
  * coherency. pieboot runs with the MMU off (its stores bypass the caches),
- * and xnu turns the caches on without invalidating them first (iBoot
- * leaves them clean): lines the firmware left for this memory, stale or
- * dirty, must not outlive pieboot's writes there.
+ * and xnu turns the caches on without invalidating them first (it expects
+ * them clean): lines the firmware left for this memory, stale or dirty,
+ * must not outlive pieboot's writes there.
  */
 static void
 dcache_clean_invalidate(uint64_t start, uint64_t end)
@@ -245,8 +242,8 @@ show_previous_panic(const struct machine *m)
 	}
 	printf("\npieboot: end of the previous panic log\n");
 	/*
-	 * Left in place, unlike iBoot, which extracts it: the kernel keeps it
-	 * for user space (xnu's kern.previous_panic) and then clears the region.
+	 * Left in place: the kernel keeps it for user space (xnu's
+	 * kern.previous_panic) and then clears the region.
 	 */
 	/* Time to read it (or photograph the screen) before booting again. */
 	printf("pieboot: booting again in %u seconds\n", PANIC_PAUSE_SECONDS);
@@ -547,7 +544,7 @@ scan_io_range(struct machine *m, const struct fdt_node *n)
 	}
 }
 
-/* --- Apple device tree ---------------------------------------------------------- */
+/* --- xnu device tree ------------------------------------------------------------ */
 
 static uint32_t
 node_phandle(struct machine *m, const struct fdt_node *n)
@@ -595,8 +592,9 @@ gic_intid(const uint8_t *spec)
 
 /*
  * IOKit's interrupt controllers take the first specifier cell as the
- * vector number (Apple's AIC uses one cell), so GIC specifiers become
- * one cell each: the interrupt ID. The GIC node gets #interrupt-cells 1.
+ * vector number (the interrupt controllers of xnu's usual device trees use
+ * one cell), so GIC specifiers become one cell each: the interrupt ID. The
+ * GIC node gets #interrupt-cells 1.
  */
 static const void *
 gic_specs_to_intids(const struct fdt_prop *p, uint32_t *out_len)
@@ -651,7 +649,7 @@ clock_rate(struct machine *m, const struct fdt_node *n)
 	return clock_id ? mbox_clock_rate(clock_id) : 0;
 }
 
-/* Convert an FDT device node (and its children) under the Apple /arm-io node. */
+/* Convert an FDT device node (and its children) under the ADT's /arm-io node. */
 static void
 convert_device(struct machine *m, const struct fdt_node *n, struct adt_node *parent)
 {
@@ -747,7 +745,7 @@ convert_device(struct machine *m, const struct fdt_node *n, struct adt_node *par
 	}
 
 	/*
-	 * Apple convention: "reg" is a list of { u64 offset from the /arm-io
+	 * ADT convention: "reg" is a list of { u64 offset from the /arm-io
 	 * base, u64 size } in native byte order.
 	 */
 	unsigned nreg = fdt_reg_count(n);
@@ -802,8 +800,8 @@ build_cpus(struct machine *m, struct adt_node *root)
 	adt_set_u32(cpus, "#size-cells", 0);
 
 	/*
-	 * AppleARMSMP wants an interrupt on each CPU nub (on Apple SoCs, the
-	 * PMI). Use the PMU interrupt: one PPI for all, or one SPI per CPU.
+	 * AppleARMSMP wants an interrupt on each CPU nub (usually the PMI). Use
+	 * the PMU interrupt: one PPI for all, or one SPI per CPU.
 	 */
 	struct fdt_prop *pmu_irqs = NULL;
 	struct fdt_node *pmu = fdt_find_compatible(m->fdt.root, "arm,armv8-pmuv3");
@@ -876,10 +874,9 @@ build_adt(struct machine *m, uint64_t ramdisk_pa, uint64_t ramdisk_size)
 	/* /chosen */
 	struct adt_node *chosen = adt_new(root, "chosen");
 	/*
-	 * As on Apple hardware, the DRAM span includes the panic region above
-	 * the memory the kernel manages: the kernel then maps the region as
-	 * normal memory, not as a device, and the panic header's unaligned
-	 * (packed) fields can be read.
+	 * The DRAM span includes the panic region above the memory the kernel
+	 * manages: the kernel then maps the region as normal memory, not as a
+	 * device, and the panic header's unaligned (packed) fields can be read.
 	 */
 	uint64_t dram_end = m->ram_base + m->ram_size;
 	if (m->panic_size) {
@@ -933,7 +930,7 @@ build_adt(struct machine *m, uint64_t ramdisk_pa, uint64_t ramdisk_size)
 	/*
 	 * DEVELOPMENT kernels panic when interrupts stay masked or preemption
 	 * stays disabled longer than a timeout in timer ticks, sized for
-	 * Apple's 24 MHz timer (35 ms): with the Pi's 54 MHz timer (QEMU's
+	 * a 24 MHz timer (35 ms): with the Pi's 54 MHz timer (QEMU's
 	 * 62.5 MHz) it is under 16 ms, and the emulator trips it. Trace only.
 	 */
 	struct adt_node *timeouts = adt_new(chosen, "machine-timeouts");
@@ -1175,9 +1172,9 @@ scan_dmapool(const char *args, size_t len, uint64_t *size)
  * fault) whatever cache mode IOKit asks for, unless pmap-io-ranges says
  * otherwise, and those ranges must lie outside the managed span. So
  * /defaults pmap-io-ranges has the pool, write-combined, and /chosen
- * pieboot,display-pool says where it is. None is carved where it would
- * leave the kernel less than half of the first RAM range, or outside the
- * display's reach (the low GB).
+ * pieboot,display-pool says where it is. None is carved where the
+ * kernel's worst-case start above it lies in the top half of the first RAM
+ * range, or outside the display's reach (the low GB).
  */
 #define DISPLAY_POOL_REACH      0x40000000ULL
 #define DISPLAY_POOL_BCM2711    (96ULL << 20)
@@ -1209,14 +1206,25 @@ carve_display_pool(struct machine *m, const char *fdt_args, const struct payload
 			busy[nbusy++] = (struct place_range){ base, end };
 		}
 	}
+	unsigned nreserves = nbusy;
 	if (video && video->v_rowBytes && video->v_height) {
 		busy[nbusy++] = (struct place_range){ video->v_baseAddr,
 			video->v_baseAddr + video->v_rowBytes * video->v_height };
 	}
 	uint64_t base;
 	if (!place_lowest(ram, (uint64_t)(uintptr_t)__image_end, SZ_2M, 0, size, busy, nbusy, &base) ||
-	    ram.end - base < 2 * size || base + size > DISPLAY_POOL_REACH) {
+	    base + size > DISPLAY_POOL_REACH) {
 		printf("pieboot: no display pool of %lu MB: no room for it below the kernel\n", size >> 20);
+		return;
+	}
+	/* The lowest the kernel can start above the pool (place_kernel), at worst a block later. */
+	uint64_t floor = MAX(base + size, KERNEL_L2_BLOCK);
+	for (unsigned i = 0; i < nreserves; i++) {
+		floor = MAX(floor, busy[i].end);
+	}
+	floor += KERNEL_L2_BLOCK;
+	if (floor >= ram.end || ram.end - floor < (ram.end - ram.base) / 2) {
+		printf("pieboot: no display pool of %lu MB: the kernel's worst-case start would be in the top half of the first RAM range\n", size >> 20);
 		return;
 	}
 	m->pool_pa = base;
@@ -1365,6 +1373,9 @@ pieboot_main(void *fdt_blob)
 	if (!verbose && bootflag(pl.bootargs, pl.bootargs_size, "-v")) {
 		verbose = true;
 		fbcon_text();           /* with what was printed so far */
+	}
+	if (!pl.kernel && !pl.nkernels) {
+		panic_nokernel("bundle has no kernel");
 	}
 
 	/*
@@ -1524,7 +1535,7 @@ pieboot_main(void *fdt_blob)
 	if (have_video) {
 		ba->Video = video;
 		/*
-		 * As Apple's boot.efi does: graphics mode, unless -v, keeps xnu's
+		 * As boot.efi does: graphics mode, unless -v, keeps xnu's
 		 * text console off the screen (PE_create_console), so the pie
 		 * stays; text mode shows the kernel's messages.
 		 */

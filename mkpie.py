@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-2-Clause
 """
-Make pie.c, the picture pieboot shows while it boots without -v: Noto
-Emoji's pie (U+1F967) on black, and its question mark (U+2753) over the
-pie for when there is no kernel to boot.
+Make pie.c, the picture pieboot shows while it boots without -v: the pie
+on black, and a question mark over it for when there is no kernel to boot.
 
-usage: mkpie.py PIE.png QUESTION.png > pie.c
+usage: mkpie.py pie.png > pie.c
 
-The PNGs are noto-emoji's 3D/png/128/emoji_u1f967.png and emoji_u2753.png
-(https://github.com/googlefonts/noto-emoji, tag v2026-09-24-unicode18_0,
-its shaded 3D set), 128x128 RGBA.
-The pie is cropped to its pixels; the question mark is halved and laid
-over the middle of the pie dish. Both are blended over black, share one
-palette of at most 256 colours (median cut) and are run-length coded as
-{ count, palette index } byte pairs, row after row, as fbcon.c draws them.
+pie.png is 128x128 RGBA. The pie is cropped to its pixels. The question
+mark is drawn here, 64x64, and laid over the middle of the pie. Both are
+blended over black, share one palette of at most 256 colours (median cut)
+and are run-length coded as { count, palette index } byte pairs, row after
+row, as fbcon.c draws them.
 """
 import struct
 import sys
@@ -69,16 +66,25 @@ def over(top, bottom):
     return tuple((c * a + d * (255 - a) + 127) // 255 for c, d in zip((r, g, b), bottom))
 
 
-def halve(img):
-    """Box-filter to half size, with premultiplied alpha."""
+QUESTION_RGB = (229, 57, 53)
+
+
+def question():
+    """A red question mark, 64x64 RGBA, 4x4 supersampled: an arc open to the
+    lower left, a stem below its lower right, and a dot."""
+    def inside(x, y):
+        d2 = (x - 32) ** 2 + (y - 20) ** 2
+        if 7 ** 2 <= d2 <= 14 ** 2 and not (x < 32 and y > 20):
+            return True
+        if 28.5 <= x <= 35.5 and 27 <= y <= 40:
+            return True
+        return (x - 32) ** 2 + (y - 48) ** 2 <= 4.5 ** 2
     out = []
-    for y in range(0, len(img), 2):
+    for y in range(64):
         row = []
-        for x in range(0, len(img[0]), 2):
-            px = [img[y][x], img[y][x + 1], img[y + 1][x], img[y + 1][x + 1]]
-            a = sum(p[3] for p in px)
-            rgb = tuple((sum(p[i] * p[3] for p in px) + a // 2) // a if a else 0 for i in range(3))
-            row.append(rgb + ((a + 2) // 4,))
+        for x in range(64):
+            n = sum(inside(x + (i + 0.5) / 4, y + (j + 0.5) / 4) for i in range(4) for j in range(4))
+            row.append(QUESTION_RGB + ((255 * n + 8) // 16,))
         out.append(row)
     return out
 
@@ -138,21 +144,19 @@ def c_bytes(data):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: mkpie.py PIE.png QUESTION.png > pie.c")
-    pie, question = read_png(sys.argv[1]), read_png(sys.argv[2])
-    if len(pie) != SIZE or len(question) != SIZE:
-        raise SystemExit("mkpie: the PNGs must be %dx%d" % (SIZE, SIZE))
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: mkpie.py pie.png > pie.c")
+    pie = read_png(sys.argv[1])
+    if len(pie) != SIZE or len(pie[0]) != SIZE:
+        raise SystemExit("mkpie: pie.png must be %dx%d" % (SIZE, SIZE))
 
     black = (0, 0, 0)
     canvas = [[over(p, black) for p in row] for row in pie]
     px, py, pw, ph = bbox(pie, lambda p: p[3] > 0)
-    # The dish: the pie's opaque pixels (its steam is translucent).
-    dx, dy, dw, dh = bbox(pie, lambda p: p[3] == 255)
-    small = halve(question)
+    small = question()
     qx, qy, qw, qh = bbox(small, lambda p: p[3] > 0)
-    ox = dx + (dw - qw) // 2 - qx
-    oy = dy + (dh - qh) // 2 - qy
+    ox = px + (pw - qw) // 2 - qx
+    oy = py + (ph - qh) // 2 - qy
     with_question = [row[:] for row in canvas]
     for y in range(len(small)):
         for x in range(len(small)):
@@ -177,20 +181,11 @@ def main():
             index[c] = min(range(len(palette)), key=lambda i: sum((a - b) ** 2 for a, b in zip(c, palette[i])))
 
     plain_rle, marked_rle = rle(plain, index), rle(marked, index)
-    print("""/* SPDX-License-Identifier: OFL-1.1 */
+    print("""/* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * The picture pieboot shows while it boots without -v (fbcon.c), made by
- * mkpie.py from Noto Emoji's 3D set, tag v2026-09-24-unicode18_0
- * (https://github.com/googlefonts/noto-emoji):
- * the pie, U+1F967, and its question mark, U+2753, over the pie for when
+ * mkpie.py from pie.png: the pie, and a question mark over it for when
  * there is no kernel to boot. Runs of { count, palette index }, row by row.
- *
- * The Noto Emoji images are
- *
- * Copyright 2013 Google LLC
- *
- * licensed under the SIL Open Font License, Version 1.1 (LICENSE-noto-emoji,
- * https://scripts.sil.org/OFL).
  */
 
 #include <stdint.h>
@@ -200,7 +195,7 @@ def main():
     for i in range(0, len(palette), 8):
         print("\t" + " ".join("0x%06x," % (r << 16 | g << 8 | b) for r, g, b in palette[i:i + 8]))
     print("};\n")
-    print("/* The pie: { x, y, width, height } of its box on the 128x128 emoji. */")
+    print("/* The pie: { x, y, width, height } of its box on the 128x128 picture. */")
     print("const uint16_t pie_plain_box[4] = { %d, %d, %d, %d };" % (px, py, pw, ph))
     print("const uint8_t pie_plain[%d] = {\n%s\n};\n" % (len(plain_rle), c_bytes(plain_rle)))
     print("/* The question mark over the pie: the box of the pie it covers, likewise. */")

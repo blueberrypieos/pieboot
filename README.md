@@ -1,12 +1,12 @@
 # pieboot
 
 A small EL2 boot shim that lets xnu boot from a Linux-style boot path
-(Raspberry Pi firmware, U-Boot or QEMU `-kernel`). xnu expects iBoot's
-contract instead:
+(Raspberry Pi firmware, U-Boot or QEMU `-kernel`). xnu expects a different
+contract:
 
 - entry at EL1 with the MMU off;
 - `x0` = the physical address of `boot_args`;
-- an Apple flattened device tree (ADT).
+- an xnu flattened device tree (ADT).
 
 `pieboot.bin` carries a Linux arm64 `Image` header, so firmware loads it like
 a Linux kernel and passes the FDT in `x0`. The xnu kernel comes from the
@@ -73,7 +73,7 @@ Other details of the converted tree:
 - **GIC interrupts** become one cell each, the GIC interrupt ID (SPI n →
   n + 32, PPI n → n + 16), and the GIC's `#interrupt-cells` becomes 1.
   IOKit's interrupt controllers take the first specifier cell as the vector
-  number, as with Apple's AIC.
+  number, as in xnu's usual device trees.
 - **CPU nodes** carry their PMU interrupt; `AppleARMSMP` requires an
   interrupt on every CPU nub.
 - **`/chosen`** also gets:
@@ -102,8 +102,9 @@ Other details of the converted tree:
   it does not manage as a device's whatever cache mode IOKit asks for,
   unless such an entry says otherwise, and those entries must lie outside
   the memory it manages (so the pool cannot be a DRAM hole above the
-  kernel). None is carved where it would leave less than half of the
-  first RAM range or reach above 1 GB.
+  kernel). None is carved where the kernel's worst-case start above it
+  lies in the top half of the first RAM range, or where it would reach
+  above 1 GB.
 - **`pieboot,dma-ranges`**, on a device whose bus reaches RAM at other
   addresses than the CPU's: the FDT `dma-ranges` of every bus level above
   it, composed, as `{u64 CPU address, u64 bus address, u64 size}` triples.
@@ -113,14 +114,13 @@ Other details of the converted tree:
   those the CPU can reach.
 - **Panic region:** the top 512 KB of the last RAM range is kept out of
   the kernel's memory and published as `/pram` `reg` with
-  `/chosen/embedded-panic-log-size`, iBoot's panic region. The kernel
+  `/chosen/embedded-panic-log-size`, where xnu looks for it. The kernel
   writes its panic log there, and since RAM survives a warm reset, pieboot
-  prints the previous boot's panic log when it finds one. Unlike iBoot, it
-  leaves the log in place: the kernel copies it out for user space and
-  clears the region. As on Apple hardware, `dram-size` covers the
-  region, so the kernel maps it as normal memory: mapped as a device, the
-  packed panic header's unaligned fields faulted and panics printed
-  nothing.
+  prints the previous boot's panic log when it finds one. It leaves the
+  log in place: the kernel copies it out for user space and clears the
+  region. `dram-size` covers the region, so the kernel maps it as normal
+  memory: mapped as a device, the packed panic header's unaligned fields
+  faulted and panics printed nothing.
 - **RAM:** all `/memory` ranges are merged. The kernel manages the span from
   the first to the last, and the gaps (the VideoCore carve-out, the
   peripheral window on 8 GB boards) go to `/chosen/dram-holes` as
@@ -153,10 +153,10 @@ asks the VideoCore firmware for a 32 bpp framebuffer at the current display
 size, or 1024×768 when none is reported. The kernel gets it in
 `boot_args.Video`.
 
-By default the screen is black with a pie (🥧) in the middle, and pieboot's
+By default the screen is black with a pie in the middle, and pieboot's
 messages go only to the UART. The kernel gets `v_display` = 1, graphics
-mode, as from Apple's `boot.efi`: xnu keeps its text console off the
-screen, so the pie stays.
+mode, as from `boot.efi`: xnu keeps its text console off the screen, so
+the pie stays.
 
 - **`-v`** in the boot-args (the FDT's or the bundle's) turns the screen
   into a text console: pieboot's messages, then the kernel's, since it gets
@@ -164,16 +164,15 @@ screen, so the pie stays.
   once KDP is set up.
 - **No kernel to boot** (no initrd, an initrd that is neither a Mach-O
   kernel nor a bundle, a bundle without the kernel, a broken Mach-O): a
-  question mark (❓) flashes over the pie, the ACT LED in step. With `-v`,
+  red question mark flashes over the pie, the ACT LED in step. With `-v`,
   the error is on the screen instead.
 - **Any other fatal error** turns the screen to text, with pieboot's
   messages so far (the last 4 KB) and the error.
 - **A previous boot's panic log** is shown as text for 15 seconds, then
   the pie comes back.
 
-The pie and the question mark are Noto Emoji images, in `pie.c`, made by
-`mkpie.py` from the 128 px PNGs of noto-emoji's 3D set (tag
-`v2026-09-24-unicode18_0`).
+The pie is `pie.png`. `mkpie.py` makes `pie.c` from it and draws the
+question mark.
 
 ## Bundles
 
@@ -217,7 +216,5 @@ LED signals where it got to.
 ## License
 
 pieboot is under the BSD 2-Clause license (see `LICENSE`). The console
-font in `font.c` is Spleen 8x16 by Frederic Cambus, also BSD 2-Clause; its
-copyright notice is kept in that file. The pie and question mark in `pie.c`
-are Noto Emoji images, Copyright 2013 Google LLC, under the SIL Open Font
-License 1.1 (see `LICENSE-noto-emoji`).
+font in `font.c` is Spleen 8x16 by Frederic Cambus, also BSD 2-Clause. Its
+copyright notice is kept in that file.

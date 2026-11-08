@@ -56,7 +56,7 @@ clear_row(uint32_t r)
 }
 
 /*
- * A box of the pie emoji (pie.c: { x, y, width, height } on the emoji),
+ * A box of the pie picture (pie.c: { x, y, width, height } on the picture),
  * from its runs of { count, palette index }, with the pie in the middle
  * of the screen.
  */

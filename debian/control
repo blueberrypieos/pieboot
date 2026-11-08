@@ -1,0 +1,18 @@
+Source: pieboot
+Section: admin
+Priority: optional
+Maintainer: Maxwell <maxwell@blueberrypieos.com>
+Build-Depends: pietoolchain (>= 0.1.0), clang-20:native, lld-20:native, llvm-20:native
+Standards-Version: 4.7.3
+Homepage: https://github.com/blueberrypieos/pieboot
+Vcs-Git: https://github.com/blueberrypieos/pieboot.git
+Vcs-Browser: https://github.com/blueberrypieos/pieboot
+Rules-Requires-Root: no
+
+Package: pieboot
+Architecture: darwin-arm64
+Priority: required
+Description: boot shim that starts xnu from arm64 Linux-style boot firmware
+ pieboot.bin is installed in /usr/lib/blueberry-pie-os/boot. It is loaded as
+ a Linux arm64 kernel, converts the firmware's device tree and starts xnu
+ from the initrd.

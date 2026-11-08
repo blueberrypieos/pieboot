@@ -1,0 +1,22 @@
+#!/usr/bin/make -f
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 The Blueberry Pie OS Authors
+
+include /usr/share/pietoolchain/rules.mk
+
+BOOT := usr/lib/blueberry-pie-os/boot
+PIEBOOT_SOURCES := start.S main.c fdt.c adt.c macho.c lib.c uart.c psci.c mbox.c fbcon.c font.c pie.c led.c place.c
+
+$(OBJ)/pieboot/pieboot.bin:
+	rm -rf $(OBJ)/pieboot
+	mkdir -p $(OBJ)/pieboot
+	cp $(SRCROOT)/Makefile $(SRCROOT)/link.ld $(SRCROOT)/*.h $(addprefix $(SRCROOT)/,$(PIEBOOT_SOURCES)) \
+		$(OBJ)/pieboot/
+	$(MAKE) -C $(OBJ)/pieboot pieboot.bin
+
+install: $(OBJ)/pieboot/pieboot.bin
+	install -d $(ROOT)/$(BOOT) $(ROOT)/DEBIAN
+	install -m 644 $< $(ROOT)/$(BOOT)/pieboot.bin
+	install -m 755 debian/pieboot.postinst $(ROOT)/DEBIAN/postinst
+
+.PHONY: install

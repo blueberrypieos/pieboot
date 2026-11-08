@@ -320,8 +320,8 @@ panic(const char *fmt, ...)
 }
 
 /*
- * Nothing to boot: as on a Mac without a system, a question mark flashes
- * (over the pie), the LED in step. With -v the screen shows the error.
+ * Nothing to boot: a question mark flashes over the pie, the LED in
+ * step. With -v the screen shows the error.
  */
 void
 panic_nokernel(const char *fmt, ...)
@@ -343,7 +343,7 @@ panic_nokernel(const char *fmt, ...)
 	}
 }
 
-/* 4MB is plenty for the parsed FDT and the Apple device tree under construction. */
+/* 4MB is plenty for the parsed FDT and the xnu device tree under construction. */
 static uint8_t heap[4 << 20] __attribute__((aligned(16)));
 static size_t heap_used;
 

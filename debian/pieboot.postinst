@@ -1,0 +1,5 @@
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && [ -z "${DPKG_ROOT:-}" ] && [ "$(uname -s)" = Darwin ] && [ -x /usr/libexec/blueberry-pie-os-update-boot ]; then
+	/usr/libexec/blueberry-pie-os-update-boot
+fi

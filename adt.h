@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
-/* Apple flattened device tree (the format xnu's pexpert/gen/device_tree.c reads). */
+/* xnu's flattened device tree (the format xnu's pexpert/gen/device_tree.c reads). */
 #ifndef PIEBOOT_ADT_H
 #define PIEBOOT_ADT_H
 #include "lib.h"
