@@ -5,7 +5,7 @@
 include /usr/share/pietoolchain/rules.mk
 
 BOOT := usr/lib/blueberry-pie-os/boot
-PIEBOOT_SOURCES := start.S main.c fdt.c adt.c macho.c lib.c uart.c psci.c mbox.c fbcon.c font.c pie.c led.c place.c
+PIEBOOT_SOURCES := start.S main.c fdt.c adt.c macho.c lib.c uart.c psci.c mbox.c fallback.c fbcon.c font.c pie.c led.c place.c
 
 $(OBJ)/pieboot/pieboot.bin:
 	rm -rf $(OBJ)/pieboot

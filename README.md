@@ -200,6 +200,45 @@ pieboot reads these from the FDT's `bootargs` and the bundle's:
 - `pieboot.dmapool=SIZE`: the display pool's size, in bytes or with K, M
   or G (`96M`); 0 for none. By default 96 MB on the BCM2711, none
   elsewhere.
+- `pieboot.fallback=1` or `pieboot.fallback=flag`: a fallback boot, below.
+  It is read from the FDT's `bootargs` only.
+
+## Fallback boot
+
+With the fallback boot, a system that fails to boot falls back to one that
+works. The new boot files go in a directory of the boot partition, which
+`config.txt` names with `os_prefix`. Their `cmdline.txt` has
+`pieboot.fallback=1`. `tryboot.txt` is the old `config.txt`, and its
+`cmdline.txt` must not have `pieboot.fallback`.
+
+Before anything else, pieboot sets the firmware's tryboot flag. Then it
+arms the PM watchdog with its full count, about 16 seconds. It sets the
+count again while it prints a previous panic's log and as it enters the
+kernel. It skips the pause after that log. A kernel that boots takes the
+watchdog over. With firmware that keeps the flag over a watchdog reset, a
+hang, a panic or any later reset then boots `tryboot.txt`'s system once.
+That boot clears the flag, so its next reset tries the files on trial
+again. A healthy trial's own reboot also ends in `tryboot.txt`'s system.
+
+### Limitations
+
+It does not cover:
+
+- a hang before the flag is set;
+- a kernel that runs but never reaches a working user space, since the
+  kernel keeps setting the watchdog;
+- files missing from the `os_prefix` directory, which the firmware may
+  replace with the ones at the top of the partition;
+- an `autoboot.txt` with `tryboot_a_b=1`, which changes what the flag
+  means.
+
+`pieboot.fallback=flag` sets the flag and arms nothing. Use it first on a
+board whose firmware has not been tried: if the flag is ignored, the trial
+just boots again. If the firmware does not take the flag, pieboot arms
+nothing. A mailbox that does not answer in a second is not used again in
+that boot. QEMU's `raspi4b` resets at once when the watchdog is armed, so
+there the watchdog is left alone. The kernel's `pie_watchdog=0` disarms
+the watchdog that pieboot armed. The console says what was done.
 
 ## Running and debugging
 

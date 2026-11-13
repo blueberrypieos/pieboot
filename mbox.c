@@ -23,8 +23,11 @@
 #define MBOX_RESPONSE_OK        0x80000000u
 
 #define VC_BUS_MASK             0x3FFFFFFFu
+#define MBOX_DEFAULT_FREQ       54000000u       /* the BCM2711's and BCM2712's timer */
 
+#define TAG_GET_FIRMWARE_REV    0x00000001
 #define TAG_GET_CLOCK_RATE      0x00030002
+#define TAG_SET_REBOOT_FLAGS    0x00038064
 #define TAG_GET_DISPLAY_SIZE    0x00040003
 #define TAG_ALLOCATE_BUFFER     0x00040001
 #define TAG_GET_PITCH           0x00040008
@@ -37,6 +40,7 @@
 #define PIXEL_ORDER_BGR         0       /* blue in byte 0: 0x00RRGGBB words, xnu's BGRA bytes */
 
 static uint64_t mbox_base;
+static bool mbox_dead;                  /* timed out once: never used again */
 static const struct fdt_node *mbox_node;
 static volatile uint32_t msg[64] __attribute__((aligned(16)));
 static uint32_t msg_bus;                /* msg's address for the firmware */
@@ -58,6 +62,10 @@ mbox_init(const struct fdt *fdt)
 {
 	struct fdt_node *n = fdt_find_compatible(fdt->root, "brcm,bcm2835-mbox");
 	uint64_t size, bus;
+
+	if (mbox_dead) {
+		return false;
+	}
 
 	/*
 	 * The firmware reads the message by DMA: its bus address comes from the
@@ -82,13 +90,24 @@ mbox_call(void)
 		return false;
 	}
 	uint32_t word = msg_bus | MBOX_CH_PROPERTY;
+	uint64_t start = read_cntpct(), second = read_cntfrq();
 
+	if (second == 0) {
+		second = MBOX_DEFAULT_FREQ;
+	}
 	__asm__ volatile ("dsb sy" ::: "memory");
 	while (mmio_read(MBOX_STATUS1) & MBOX_FULL) {
+		if (read_cntpct() - start > second) {
+			goto timeout;
+		}
 	}
 	mmio_write(MBOX_WRITE, word);
 	for (;;) {
-		while (mmio_read(MBOX_STATUS0) & MBOX_EMPTY) {
+		if (read_cntpct() - start > second) {
+			goto timeout;
+		}
+		if (mmio_read(MBOX_STATUS0) & MBOX_EMPTY) {
+			continue;
 		}
 		if (mmio_read(MBOX_READ) == word) {
 			break;
@@ -96,6 +115,12 @@ mbox_call(void)
 	}
 	__asm__ volatile ("dsb sy" ::: "memory");
 	return msg[1] == MBOX_RESPONSE_OK;
+timeout:
+	/* The firmware may still write msg: no more messages this boot. */
+	mbox_base = 0;
+	mbox_dead = true;
+	printf("pieboot: the firmware mailbox did not answer in 1 s; not used again\n");
+	return false;
 }
 
 /* Append a tag with nvals 32-bit values; returns the index of its values. */
@@ -116,6 +141,10 @@ bool
 mbox_framebuffer(struct Boot_Video *video)
 {
 	unsigned i = 2;
+
+	if (!mbox_base) {
+		return false;
+	}
 
 	/* The display size the firmware chose (from HDMI EDID or config.txt). */
 	unsigned at = put_tag(&i, TAG_GET_DISPLAY_SIZE, 2, NULL);
@@ -177,6 +206,10 @@ uint32_t
 mbox_clock_rate(uint32_t clock_id)
 {
 	unsigned i = 2;
+
+	if (!mbox_base) {
+		return 0;
+	}
 	const uint32_t req[2] = { clock_id, 0 };
 	unsigned at = put_tag(&i, TAG_GET_CLOCK_RATE, 2, req);
 	msg[i++] = 0;
@@ -186,4 +219,43 @@ mbox_clock_rate(uint32_t clock_id)
 		return 0;
 	}
 	return msg[at + 1];
+}
+
+uint32_t
+mbox_firmware_revision(void)
+{
+	unsigned i = 2;
+
+	if (!mbox_base) {
+		return 0;
+	}
+	unsigned at = put_tag(&i, TAG_GET_FIRMWARE_REV, 1, NULL);
+	msg[i++] = 0;
+	msg[0] = i * 4;
+	msg[1] = MBOX_REQUEST;
+	if (!mbox_call() || msg[at - 1] != (MBOX_RESPONSE_OK | 4)) {
+		return 0;
+	}
+	return msg[at];
+}
+
+bool
+mbox_set_reboot_flags(uint32_t flags)
+{
+	unsigned i = 2;
+
+	if (!mbox_base) {
+		return false;
+	}
+	unsigned code = put_tag(&i, TAG_SET_REBOOT_FLAGS, 1, &flags) - 1;
+	msg[i++] = 0;
+	msg[0] = i * 4;
+	msg[1] = MBOX_REQUEST;
+	return mbox_call() && (msg[code] & MBOX_RESPONSE_OK);
+}
+
+bool
+mbox_timed_out(void)
+{
+	return mbox_dead;
 }

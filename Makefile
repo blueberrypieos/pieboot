@@ -13,7 +13,7 @@ CFLAGS  := --target=aarch64-none-elf -mcpu=cortex-a53+nocrypto -mgeneral-regs-on
 ASFLAGS := --target=aarch64-none-elf -mcpu=cortex-a53+nocrypto -fPIE -g
 LDFLAGS := -static -pie --no-dynamic-linker -z norelro -z noexecstack -T link.ld
 
-OBJS := start.o main.o fdt.o adt.o macho.o lib.o uart.o psci.o mbox.o fbcon.o font.o pie.o led.o place.o
+OBJS := start.o main.o fdt.o adt.o macho.o lib.o uart.o psci.o mbox.o fallback.o fbcon.o font.o pie.o led.o place.o
 
 all: pieboot.bin
 

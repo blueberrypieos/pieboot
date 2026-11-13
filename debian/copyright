@@ -8,6 +8,8 @@ Files-Included:
  adt.c
  adt.h
  boot_args.h
+ fallback.c
+ fallback.h
  fbcon.c
  fbcon.h
  fdt.c

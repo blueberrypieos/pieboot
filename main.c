@@ -28,6 +28,7 @@
 #include "uart.h"
 #include "psci.h"
 #include "mbox.h"
+#include "fallback.h"
 #include "fbcon.h"
 #include "led.h"
 #include "place.h"
@@ -226,7 +227,7 @@ dcache_clean_invalidate(uint64_t start, uint64_t end)
 
 /* Print the panic log a previous boot left in the panic region (as text on the screen). */
 static void
-show_previous_panic(const struct machine *m)
+show_previous_panic(const struct machine *m, bool pause)
 {
 	const struct panic_header *h = (const void *)(uintptr_t)m->panic_pa;
 	if (h->magic != EMBEDDED_PANIC_MAGIC || h->panic_log_len == 0 ||
@@ -239,16 +240,25 @@ show_previous_panic(const struct machine *m)
 	const char *log = (const char *)h + h->panic_log_offset;
 	for (uint32_t i = 0; i < h->panic_log_len && log[i]; i++) {
 		uart_putc(log[i]);
+		if (log[i] == '\n' || i % 1024 == 0) {
+			fallback_renew();
+		}
 	}
+	fallback_renew();
 	printf("\npieboot: end of the previous panic log\n");
 	/*
 	 * Left in place: the kernel keeps it for user space (xnu's
 	 * kern.previous_panic) and then clears the region.
 	 */
-	/* Time to read it (or photograph the screen) before booting again. */
-	printf("pieboot: booting again in %u seconds\n", PANIC_PAUSE_SECONDS);
-	uint64_t until = read_cntpct() + read_cntfrq() * PANIC_PAUSE_SECONDS;
-	while (read_cntpct() < until) {
+	/*
+	 * Time to read it before booting again, except in a fallback boot,
+	 * whose watchdog would end the pause with a reset.
+	 */
+	if (pause) {
+		printf("pieboot: booting again in %u seconds\n", PANIC_PAUSE_SECONDS);
+		uint64_t until = read_cntpct() + read_cntfrq() * PANIC_PAUSE_SECONDS;
+		while (read_cntpct() < until) {
+		}
 	}
 	if (pie) {
 		fbcon_pie();
@@ -1343,6 +1353,14 @@ pieboot_main(void *fdt_blob)
 	uint64_t pa, size;
 
 	fdt_parse(&m.fdt, fdt_blob);
+	/* A fallback boot is set up before anything else; see fallback.c. */
+	struct fdt_node *chosen = fdt_path(&m.fdt, "/chosen");
+	const char *fdt_bootargs = fdt_prop_str(chosen, "bootargs");
+	size_t fdt_bootargs_size = fdt_bootargs ? strlen(fdt_bootargs) + 1 : 0;
+	char fallback_mode[8];
+	enum fallback fallback = fallback_arm(&m.fdt,
+	    bootarg(fdt_bootargs, fdt_bootargs_size, "pieboot.fallback=", fallback_mode, sizeof(fallback_mode)) ?
+	    fallback_mode : NULL);
 	/* The activity LED: on while pieboot runs (off at the kernel, blinking on an error). */
 	led_init(&m.fdt);
 	led_set(true);
@@ -1367,9 +1385,7 @@ pieboot_main(void *fdt_blob)
 	 * The screen first: the pie, or with -v everything after as text as
 	 * well as on the UART. The kernel gets the same framebuffer.
 	 */
-	struct fdt_node *chosen = fdt_path(&m.fdt, "/chosen");
-	const char *fdt_bootargs = fdt_prop_str(chosen, "bootargs");
-	bool verbose = bootflag(fdt_bootargs, fdt_bootargs ? strlen(fdt_bootargs) + 1 : 0, "-v");
+	bool verbose = bootflag(fdt_bootargs, fdt_bootargs_size, "-v");
 	static struct Boot_Video video;
 	bool have_video = dt_framebuffer(&m.fdt, &video) || (mbox_init(&m.fdt) && mbox_framebuffer(&video));
 	if (have_video) {
@@ -1383,6 +1399,7 @@ pieboot_main(void *fdt_blob)
 		printf("pieboot: framebuffer 0x%lx, %lux%lu, %lu bytes/row, %lu bpp\n", video.v_baseAddr,
 		    video.v_width, video.v_height, video.v_rowBytes, video.v_depth & 0xff);
 	}
+	fallback_report(fallback);
 	if (m.uart && !uart_working()) {
 		printf("pieboot: the serial console's UART does not take output; serial is off\n");
 	}
@@ -1456,7 +1473,7 @@ pieboot_main(void *fdt_blob)
 		m.panic_size = PANIC_REGION_SIZE;
 		m.panic_pa = ALIGN_DOWN(last->end - m.panic_size, SZ_16K);
 		last->end = m.panic_pa;
-		show_previous_panic(&m);
+		show_previous_panic(&m, fallback != FALLBACK_ARMED);
 	}
 	m.ram_base = m.ram[0].base;
 	m.ram_size = m.ram[m.nram - 1].end - m.ram_base;
@@ -1591,5 +1608,6 @@ pieboot_main(void *fdt_blob)
 	if (m.panic_size) {
 		dcache_clean_invalidate(m.panic_pa, m.panic_pa + m.panic_size);
 	}
+	fallback_renew();
 	pieboot_enter_kernel(entry_pa, ba_pa);
 }

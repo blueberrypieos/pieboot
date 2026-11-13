@@ -1,3 +1,12 @@
+pieboot (0.1.1) blueberry-pie-os; urgency=medium
+
+  * pieboot.fallback=1 in the boot-args sets the firmware's tryboot flag and
+    arms the watchdog, so that a hang, a panic or any reset can boot
+    tryboot.txt.
+  * The firmware mailbox gives up after a second without an answer.
+
+ -- Maxwell <maxwell@blueberrypieos.com>  Thu, 12 Nov 2026 23:26:38 +0000
+
 pieboot (0.1.0) blueberry-pie-os; urgency=medium
 
   * pieboot 0.1.0.
