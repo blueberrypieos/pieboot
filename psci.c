@@ -111,8 +111,10 @@ pieboot_el2_sync(struct el2_frame *f)
 	uint64_t esr = read_esr_el2();
 
 	if (ESR_EC(esr) != ESR_EC_HVC64) {
-		printf("pieboot: unexpected EL2 trap, ESR 0x%lx\n", esr);
-		f->x[0] = (uint64_t)PSCI_NOT_SUPPORTED;
+		uint64_t elr;
+		__asm__ volatile ("mrs %0, elr_el2" : "=r"(elr));
+		printf("pieboot: unexpected EL2 trap, ESR 0x%lx at 0x%lx, skipped\n", esr, elr);
+		__asm__ volatile ("msr elr_el2, %0" :: "r"(elr + 4));
 		return;
 	}
 

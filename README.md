@@ -28,7 +28,9 @@ through `place-test.c`'s layouts.
 ## What it does
 
 1. Parses the FDT. It looks up the console (`stdout-path` or the first
-   `arm,pl011`), the first `/memory` range, the initrd from
+   `arm,pl011`; a DesignWare or 16550 UART, `snps,dw-apb-uart` or
+   `ns16550a`, with its `reg-shift` and `reg-io-width`, if `stdout-path`
+   names one), the first `/memory` range, the initrd from
    `/chosen linux,initrd-*`, the timebase from `CNTFRQ_EL0`, and the boot
    CPU's MPIDR.
 2. Loads the Mach-O kernel as low in the first RAM range as it fits, with
@@ -64,23 +66,30 @@ through `place-test.c`'s layouts.
 4. Places the DT, RAM disk (a copy) and `boot_args` after the kernel. The command
    line is FDT `bootargs` plus the bundle's `bootargs`. The RAM disk is
    padded with zeroes to a 16 KB multiple, because memdev counts whole pages.
-5. Drops from EL2 to EL1 (`HCR_EL2.RW`, timer access, `CNTVOFF` = 0) and
-   enters the kernel. Each CPU leaves `VBAR_EL2` and an EL2 stack behind
-   for the PSCI service below.
+5. Drops from EL2 to EL1 (`HCR_EL2.RW`, timer access, `CNTVOFF` = 0, no
+   PMU or debug traps in `MDCR_EL2`) and enters the kernel. With a GICv3,
+   `ICC_SRE_EL2` lets EL1 use the GIC's system registers. Each CPU leaves
+   `VBAR_EL2` and an EL2 stack behind for the PSCI service below. A trap to
+   EL2 other than a PSCI call is reported, and its instruction is skipped.
 
 Other details of the converted tree:
 
-- **GIC interrupts** become one cell each, the GIC interrupt ID (SPI n →
+- **GIC interrupts**, a GICv2's or a GICv3's with three-cell specifiers,
+  become one cell each, the GIC interrupt ID (SPI n →
   n + 32, PPI n → n + 16), and the GIC's `#interrupt-cells` becomes 1.
   IOKit's interrupt controllers take the first specifier cell as the vector
-  number, as in xnu's usual device trees.
-- **CPU nodes** carry their PMU interrupt; `AppleARMSMP` requires an
-  interrupt on every CPU nub.
+  number, as in xnu's usual device trees. A device with one of a GICv3's
+  extended interrupts gets no interrupts.
+- **CPU nodes** carry an interrupt, since `AppleARMSMP` requires one on
+  every CPU nub: the PMU's, from an `arm,armv8-pmuv3` or
+  `arm,cortex-a72-pmu` node, else PPI 7, interrupt ID 23.
 - **`/chosen`** also gets:
   - `pieboot,secondary-entry`: the EL2→EL1 trampoline for PSCI `CPU_ON`;
   - the NVRAM geometry (`nvram-bank-size`/`-count`/`current-bank`; NVRAM
     starts empty and lives in RAM);
-  - `kernel-ctrr-to-be-enabled` = 0, since there is no CTRR.
+  - `kernel-ctrr-to-be-enabled` = 0, since there is no CTRR;
+  - `pieboot,ramcons`, with `pieboot.ramcons`: the RAM console's
+    `{u64 base, u64 size}`, for the kernel's console to write too.
   - `pieboot,image`, `pieboot,fdt`, `pieboot,initrd` and, when the FDT has
     any, `pieboot,memreserve`: where pieboot itself, the firmware's FDT and
     initrd and its `/memreserve/` entries were, as `{u64 base, u64 size}`
@@ -202,6 +211,12 @@ pieboot reads these from the FDT's `bootargs` and the bundle's:
   elsewhere.
 - `pieboot.fallback=1` or `pieboot.fallback=flag`: a fallback boot, below.
   It is read from the FDT's `bootargs` only.
+- `pieboot.ramcons=BASE,SIZE`: pieboot's console also goes to a RAM
+  console there, in the layout of Linux's ramoops console zone, so that
+  the next system can read it after a reset. The range must lie outside
+  RAM, including what `pieboot.addmem` adds, and clear of pieboot, the
+  FDT and the initrd. SIZE is 13 bytes to 256 MB, and BASE is 4-byte
+  aligned. Read from the FDT's `bootargs` only.
 
 ## Fallback boot
 
@@ -232,13 +247,28 @@ It does not cover:
 - an `autoboot.txt` with `tryboot_a_b=1`, which changes what the flag
   means.
 
+On a board without the firmware mailbox but with a DesignWare watchdog
+(`snps,dw-wdt`), such as the RK3566's, `pieboot.fallback=1` arms that
+watchdog with its longest period, 89 seconds at 24 MHz, in its mode that
+resets at the end of the count, and sets no flag: the boot loader keeps
+its own. It arms a watchdog only when the kernel certainly takes it
+over: the device tree has exactly one node that any of the kernel's
+watchdog drivers could match, by `compatible`, name, `device_type` or
+`model`, and that node is an enabled `snps,dw-wdt` directly below the
+root, with at least 0x18 bytes of registers. Enabled means a `status`
+that is absent, `okay` or `ok`. Otherwise nothing is armed, and pieboot
+says so. A watchdog that does not turn on is reported, and so is one that
+is on but does not count in that mode, since it cannot be turned off
+again. Once armed, it cannot be disarmed.
+
 `pieboot.fallback=flag` sets the flag and arms nothing. Use it first on a
 board whose firmware has not been tried: if the flag is ignored, the trial
 just boots again. If the firmware does not take the flag, pieboot arms
 nothing. A mailbox that does not answer in a second is not used again in
 that boot. QEMU's `raspi4b` resets at once when the watchdog is armed, so
-there the watchdog is left alone. The kernel's `pie_watchdog=0` disarms
-the watchdog that pieboot armed. The console says what was done.
+there the watchdog is left alone. On a Raspberry Pi, the kernel's
+`pie_watchdog=0` disarms the watchdog that pieboot armed; a DesignWare
+watchdog stays armed. The console says what was done.
 
 ## Running and debugging
 
@@ -249,8 +279,9 @@ with a GICv2 and EL2:
 qemu-system-aarch64 -M virt,virtualization=on,gic-version=2 -cpu cortex-a72 -m 2G -nographic -kernel pieboot.bin -initrd xnu.bundle -append "debug=0x8 serial=3"
 ```
 
-`-M raspi4b` works too, with `pieboot.addmem` for the RAM its FDT leaves
-out. The boot-args here are only examples.
+`gic-version=3` with `-cpu cortex-a55` boots the RK3566's kernel
+(`pieboot-kernel=rk3566`). `-M raspi4b` works too, with `pieboot.addmem`
+for the RAM its FDT leaves out. The boot-args here are only examples.
 
 On hardware, pieboot prints on the UART and, with `-v`, on HDMI; the ACT
 LED signals where it got to.

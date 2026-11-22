@@ -1,3 +1,17 @@
+pieboot (0.1.2) blueberry-pie-os; urgency=medium
+
+  * GICv3 interrupts convert as a GICv2's do, and with a GICv3 EL1 gets
+    the GIC's system registers.
+  * A DesignWare or 16550 UART can be the console.
+  * pieboot.ramcons=BASE,SIZE also writes the console to RAM that survives
+    a reset.
+  * pieboot.fallback=1 arms a DesignWare watchdog on a board without the
+    firmware mailbox.
+  * EL1 gets the PMU and debug registers without traps to EL2.
+  * A trap to EL2 other than a PSCI call is skipped instead of retried.
+
+ -- Maxwell <maxwell@blueberrypieos.com>  Wed, 18 Nov 2026 14:30:00 +0000
+
 pieboot (0.1.1) blueberry-pie-os; urgency=medium
 
   * pieboot.fallback=1 in the boot-args sets the firmware's tryboot flag and

@@ -48,6 +48,8 @@ extern uint8_t __image_end[] __attribute__((visibility("hidden")));
 
 void pieboot_enter_kernel(uint64_t entry_pa, uint64_t boot_args_pa) __attribute__((noreturn));
 void pieboot_secondary_entry(void);
+/* Read by start.S on every CPU's way into the kernel: give EL1 the GICv3 CPU interface. */
+uint32_t pieboot_gic_v3;
 
 /* --- self relocation ------------------------------------------------------- */
 
@@ -163,11 +165,13 @@ struct machine {
 	uint64_t timebase;
 	uint64_t boot_mpidr;
 	struct fdt_node *uart;
-	struct fdt_node *gic;           /* GICv2 distributor, if any */
+	struct fdt_node *gic;           /* GICv2 or GICv3 distributor, if any */
+	uint64_t ramcons[2];            /* pieboot.ramcons= base and size, if any */
 	bool shim_psci;                 /* PSCI served by pieboot at EL2 (psci.c) */
 	uint64_t io_base, io_end;
 	uint32_t next_phandle;
 	uint32_t uart_phandle;
+	bool uart_kernel;               /* the kernel's console driver takes this UART */
 	uint64_t panic_pa, panic_size;  /* the panic region (/pram), if any */
 	uint64_t pool_pa, pool_size;    /* the display pool (carve_display_pool), if any */
 };
@@ -251,8 +255,8 @@ show_previous_panic(const struct machine *m, bool pause)
 	 * kern.previous_panic) and then clears the region.
 	 */
 	/*
-	 * Time to read it before booting again, except in a fallback boot,
-	 * whose watchdog would end the pause with a reset.
+	 * Time to read it before booting again, except in a fallback boot on
+	 * a Raspberry Pi, whose 16 s watchdog would end the pause with a reset.
 	 */
 	if (pause) {
 		printf("pieboot: booting again in %u seconds\n", PANIC_PAUSE_SECONDS);
@@ -500,6 +504,34 @@ chosen_addr(struct fdt_node *chosen, const char *name)
 	return p->len == 8 ? be64(p->val) : be32(p->val);
 }
 
+static bool
+is_8250(const struct fdt_node *n)
+{
+	return fdt_is_compatible(n, "snps,dw-apb-uart") || fdt_is_compatible(n, "ns16550a");
+}
+
+/* A range clear of every /memory range: the kernel neither goes there nor manages it. */
+static bool
+outside_ram(const struct fdt *fdt, uint64_t base, uint64_t size)
+{
+	if (!size || base + size < base || (base & 3)) {
+		return false;
+	}
+	for (struct fdt_node *c = fdt->root->child; c; c = c->sibling) {
+		const char *type = fdt_prop_str(c, "device_type");
+		if (!type || strcmp(type, "memory")) {
+			continue;
+		}
+		for (unsigned i = 0; i < fdt_reg_count(c); i++) {
+			uint64_t b, s;
+			if (fdt_reg(c, i, &b, &s) && s && base < b + s && b < base + size) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 static struct fdt_node *
 find_console(struct machine *m)
 {
@@ -520,14 +552,14 @@ find_console(struct machine *m)
 			const char *alias = fdt_prop_str(fdt_path(&m->fdt, "/aliases"), buf);
 			n = alias ? fdt_path(&m->fdt, alias) : NULL;
 		}
-		if (n && fdt_is_compatible(n, "arm,pl011")) {
+		if (n && (fdt_is_compatible(n, "arm,pl011") || is_8250(n))) {
 			return n;
 		}
 	}
 	return fdt_find_compatible(m->fdt.root, "arm,pl011");
 }
 
-static bool
+bool
 is_toplevel_skipped(const struct fdt_node *n)
 {
 	char name[64];
@@ -589,15 +621,31 @@ static bool
 is_gic(const struct fdt_node *n)
 {
 	return n && (fdt_is_compatible(n, "arm,gic-400") || fdt_is_compatible(n, "arm,cortex-a15-gic") ||
-	       fdt_is_compatible(n, "arm,cortex-a9-gic") || fdt_is_compatible(n, "arm,gic-v2"));
+	       fdt_is_compatible(n, "arm,cortex-a9-gic") || fdt_is_compatible(n, "arm,gic-v2") ||
+	       fdt_is_compatible(n, "arm,gic-v3"));
 }
 
-/* GIC specifier { type, number, flags } -> GIC interrupt ID. */
-static uint32_t
-gic_intid(const uint8_t *spec)
+/*
+ * GIC specifier { type, number, flags } -> GIC interrupt ID. A GICv3's
+ * extended SPIs and PPIs, types 2 and 3, have none the kernel takes.
+ */
+static bool
+gic_intid(const uint8_t *spec, uint32_t *intid)
 {
 	uint32_t type = be32(spec), num = be32(spec + 4);
-	return type == 1 ? num + 16 : num + 32;     /* PPI : SPI */
+	if (type > 1) {
+		return false;
+	}
+	*intid = type == 1 ? num + 16 : num + 32;
+	return true;
+}
+
+/* A GIC whose specifiers have three cells, the only kind converted. */
+static bool
+is_gic3cells(const struct fdt_node *n)
+{
+	uint32_t cells = 3;
+	return is_gic(n) && (!fdt_prop_u32(n, "#interrupt-cells", &cells) || cells == 3);
 }
 
 /*
@@ -612,7 +660,9 @@ gic_specs_to_intids(const struct fdt_prop *p, uint32_t *out_len)
 	uint32_t n = p->len / 12;
 	uint32_t *out = balloc(n ? n * 4 : 4);
 	for (uint32_t i = 0; i < n; i++) {
-		out[i] = gic_intid(p->val + 12 * i);
+		if (!gic_intid(p->val + 12 * i, &out[i])) {
+			return NULL;
+		}
 	}
 	*out_len = n * 4;
 	return out;
@@ -674,13 +724,17 @@ convert_device(struct machine *m, const struct fdt_node *n, struct adt_node *par
 			continue;
 		}
 		if (!strcmp(p->name, "interrupts") && p->len % 12 == 0 &&
-		    is_gic(fdt_find_phandle(m->fdt.root, irq_parent(n)))) {
+		    is_gic3cells(fdt_find_phandle(m->fdt.root, irq_parent(n)))) {
 			uint32_t len;
 			const void *intids = gic_specs_to_intids(p, &len);
-			adt_set(a, "interrupts", intids, len);
+			if (intids) {
+				adt_set(a, "interrupts", intids, len);
+			} else {
+				printf("pieboot: %s: an extended GIC interrupt, which the kernel does not take; left out\n", name);
+			}
 			continue;
 		}
-		if (!strcmp(p->name, "#interrupt-cells") && is_gic(n)) {
+		if (!strcmp(p->name, "#interrupt-cells") && is_gic3cells(n)) {
 			adt_set_u32(a, "#interrupt-cells", 1);
 			continue;
 		}
@@ -843,7 +897,7 @@ build_cpus(struct machine *m, struct adt_node *root)
 	if (!pmu) {
 		pmu = fdt_find_compatible(m->fdt.root, "arm,cortex-a72-pmu");
 	}
-	if (pmu && is_gic(fdt_find_phandle(m->fdt.root, irq_parent(pmu)))) {
+	if (pmu && is_gic3cells(fdt_find_phandle(m->fdt.root, irq_parent(pmu)))) {
 		pmu_irqs = fdt_prop(pmu, "interrupts");
 	}
 	for (struct fdt_node *c = fcpus ? fcpus->child : NULL; c; c = c->sibling) {
@@ -876,7 +930,7 @@ build_cpus(struct machine *m, struct adt_node *root)
 			uint32_t intid = 16 + 7;        /* PMU PPI by convention */
 			if (pmu_irqs && pmu_irqs->len >= 12) {
 				uint32_t n = pmu_irqs->len / 12;
-				intid = gic_intid(pmu_irqs->val + 12 * (n > index ? index : 0));
+				gic_intid(pmu_irqs->val + 12 * (n > index ? index : 0), &intid);
 			}
 			adt_set_u32(a, "interrupt-parent", node_phandle(m, m->gic));
 			adt_set_u32(a, "interrupts", intid);
@@ -962,6 +1016,9 @@ build_adt(struct machine *m, uint64_t ramdisk_pa, uint64_t ramdisk_size)
 	adt_set_u32(chosen, "kernel-ctrr-to-be-enabled", 0);
 	/* PSCI CPU_ON entry point for secondary CPUs (start.S). */
 	adt_set_u64(chosen, "pieboot,secondary-entry", (uint64_t)(uintptr_t)pieboot_secondary_entry);
+	if (m->ramcons[1]) {
+		adt_set(chosen, "pieboot,ramcons", m->ramcons, sizeof(m->ramcons));
+	}
 	/*
 	 * DEVELOPMENT kernels panic when interrupts stay masked or preemption
 	 * stays disabled longer than a timeout in timer ticks, sized for
@@ -1046,7 +1103,7 @@ build_adt(struct machine *m, uint64_t ramdisk_pa, uint64_t ramdisk_size)
 
 	/* /defaults */
 	struct adt_node *defaults = adt_new(root, "defaults");
-	if (m->uart_phandle && uart_working()) {       /* a dead UART would hang the kernel's console */
+	if (m->uart_phandle && m->uart_kernel && uart_working()) {       /* a dead UART would hang the kernel's console */
 		adt_set_u32(defaults, "serial-device", m->uart_phandle);
 	}
 	/* The display pool, which the kernel maps write-combined (carve_display_pool). */
@@ -1110,6 +1167,46 @@ scan_addmem(struct machine *m, const char *args, size_t len)
 			printf("pieboot: adding RAM 0x%lx-0x%lx from boot-args\n", base, base + size);
 		}
 	}
+}
+
+static bool
+overlaps(uint64_t base, uint64_t size, uint64_t b, uint64_t s)
+{
+	return s && size && base <= b + (s - 1) && b <= base + (size - 1);
+}
+
+/*
+ * Where the RAM console may go before the bundle is read: outside RAM, the
+ * RAM that the FDT's pieboot.addmem adds, pieboot, the FDT and the initrd.
+ * The bundle's own pieboot.addmem is checked once it is known.
+ */
+static bool
+ramcons_clear(const struct fdt *fdt, const void *blob, const char *args, size_t len, uint64_t base, uint64_t size)
+{
+	if (!outside_ram(fdt, base, size)) {
+		return false;
+	}
+	if (overlaps(base, size, (uint64_t)(uintptr_t)__image_start, (uint64_t)(__image_end - __image_start)) ||
+	    overlaps(base, size, (uint64_t)(uintptr_t)blob, be32((const uint8_t *)blob + 4))) {
+		return false;
+	}
+	struct fdt_node *chosen = fdt_path(fdt, "/chosen");
+	uint64_t start = chosen_addr(chosen, "linux,initrd-start"), end = chosen_addr(chosen, "linux,initrd-end");
+	if (end > start && overlaps(base, size, start, end - start)) {
+		return false;
+	}
+	static const char key[] = "pieboot.addmem=";
+	for (size_t i = 0; args && i + sizeof(key) - 1 < len && args[i]; i++) {
+		if ((i > 0 && args[i - 1] != ' ') || strncmp(args + i, key, sizeof(key) - 1)) {
+			continue;
+		}
+		const char *p = args + i + sizeof(key) - 1;
+		uint64_t b, sz;
+		if (parse_u64(&p, &b) && *p++ == ',' && parse_u64(&p, &sz) && overlaps(base, size, b, sz)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 /*
@@ -1366,11 +1463,31 @@ pieboot_main(void *fdt_blob)
 	led_set(true);
 	m.uart = find_console(&m);
 	for (const char *const *c = (const char *const[]){ "arm,gic-400", "arm,cortex-a15-gic",
-	    "arm,cortex-a9-gic", "arm,gic-v2", NULL }; *c && !m.gic; c++) {
+	    "arm,cortex-a9-gic", "arm,gic-v2", "arm,gic-v3", NULL }; *c && !m.gic; c++) {
 		m.gic = fdt_find_compatible(m.fdt.root, *c);
 	}
-	if (m.uart && fdt_reg(m.uart, 0, &pa, &size)) {
+	pieboot_gic_v3 = m.gic != NULL && fdt_is_compatible(m.gic, "arm,gic-v3");
+	char ramcons_arg[48];
+	bool ramcons_bad = false;
+	if (bootarg(fdt_bootargs, fdt_bootargs_size, "pieboot.ramcons=", ramcons_arg, sizeof(ramcons_arg))) {
+		const char *p = ramcons_arg;
+		if (!(parse_u64(&p, &m.ramcons[0]) && *p++ == ',' && parse_u64(&p, &m.ramcons[1]) &&
+		    ramcons_clear(&m.fdt, fdt_blob, fdt_bootargs, fdt_bootargs_size, m.ramcons[0], m.ramcons[1]) &&
+		    ramcons_init(m.ramcons[0], m.ramcons[1]))) {
+			m.ramcons[1] = 0;
+			ramcons_bad = true;
+		}
+	}
+	if (m.uart && is_8250(m.uart) && fdt_reg(m.uart, 0, &pa, &size)) {
+		uint32_t shift = 0, width = 1;
+		fdt_prop_u32(m.uart, "reg-shift", &shift);
+		fdt_prop_u32(m.uart, "reg-io-width", &width);
+		uart_set_8250(pa, shift, width);
+		/* The kernel's 8250 console is the DesignWare one, with 32-bit registers. */
+		m.uart_kernel = fdt_is_compatible(m.uart, "snps,dw-apb-uart") && width == 4 && shift >= 2;
+	} else if (m.uart && fdt_reg(m.uart, 0, &pa, &size)) {
 		uart_set_base(pa);
+		m.uart_kernel = true;
 		/* A UART the firmware has not set up: 115200 from its clock. */
 		uint32_t clk = 0;
 		struct fdt_prop *clocks = fdt_prop(m.uart, "clocks");
@@ -1400,6 +1517,10 @@ pieboot_main(void *fdt_blob)
 		    video.v_width, video.v_height, video.v_rowBytes, video.v_depth & 0xff);
 	}
 	fallback_report(fallback);
+	if (ramcons_bad) {
+		printf("pieboot: pieboot.ramcons must name 13 bytes to 256 MB, 4-byte aligned, outside RAM and the boot files; "
+		    "no RAM console\n");
+	}
 	if (m.uart && !uart_working()) {
 		printf("pieboot: the serial console's UART does not take output; serial is off\n");
 	}
@@ -1463,6 +1584,14 @@ pieboot_main(void *fdt_blob)
 	m.nram = merged;
 	scan_memhole(&m, fdt_bootargs, fdt_bootargs ? strlen(fdt_bootargs) + 1 : 0);
 	scan_memhole(&m, pl.bootargs, pl.bootargs_size);
+	/* RAM that pieboot.addmem added: the RAM console must stay clear of it too. */
+	for (unsigned i = 0; m.ramcons[1] && i < m.nram; i++) {
+		if (overlaps(m.ramcons[0], m.ramcons[1], m.ram[i].base, m.ram[i].end - m.ram[i].base)) {
+			ramcons_init(0, 0);
+			m.ramcons[1] = 0;
+			printf("pieboot: pieboot.ramcons overlaps RAM; no RAM console\n");
+		}
+	}
 	carve_display_pool(&m, fdt_bootargs, &pl, have_video ? &video : NULL);
 	/*
 	 * The panic region: the top of the last RAM range, above the memory the

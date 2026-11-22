@@ -91,6 +91,18 @@ pieboot_enter_kernel:
 	msr	cntvoff_el2, xzr
 	mov	x2, #0x33ff			// CPTR_EL2: RES1 bits, no FP/SIMD traps
 	msr	cptr_el2, x2
+	mrs	x2, pmcr_el0
+	ubfx	x2, x2, #11, #5			// PMCR_EL0.N
+	msr	mdcr_el2, x2			// MDCR_EL2: HPMN = N, no debug or PMU traps
+	adrp	x2, pieboot_gic_v3
+	ldr	w2, [x2, :lo12:pieboot_gic_v3]	// the device tree's GIC is a GICv3 (main.c)
+	cbz	w2, 2f
+	mrs	x2, s3_4_c12_c9_5		// ICC_SRE_EL2
+	orr	x2, x2, #0xf			// SRE, DFB, DIB, Enable: EL1 uses the GICv3 CPU interface
+	msr	s3_4_c12_c9_5, x2
+	isb
+	msr	s3_4_c12_c11_0, xzr		// ICH_HCR_EL2: no virtual CPU interface
+2:
 	msr	hstr_el2, xzr
 	mrs	x2, midr_el1
 	msr	vpidr_el2, x2
