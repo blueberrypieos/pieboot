@@ -9,6 +9,9 @@ pieboot (0.1.2) blueberry-pie-os; urgency=medium
     firmware mailbox.
   * EL1 gets the PMU and debug registers without traps to EL2.
   * A trap to EL2 other than a PSCI call is skipped instead of retried.
+  * Device-tree properties with names of 32 to 255 characters reach the
+    kernel: pieboot passes them encoded as pieboot,long,N.
+  * Build-Depend on pietoolchain-host and pietoolchain-sdk.
 
  -- Maxwell <maxwell@blueberrypieos.com>  Wed, 18 Nov 2026 14:30:00 +0000
 

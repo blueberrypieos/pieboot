@@ -2,7 +2,7 @@ Source: pieboot
 Section: admin
 Priority: optional
 Maintainer: Maxwell <maxwell@blueberrypieos.com>
-Build-Depends: pietoolchain (>= 0.1.0), clang-20:native, lld-20:native, llvm-20:native
+Build-Depends: pietoolchain-host (>= 0.3.0), pietoolchain-sdk (>= 0.2.0), clang-20:native, lld-20:native, llvm-20:native
 Standards-Version: 4.7.3
 Homepage: https://github.com/blueberrypieos/pieboot
 Vcs-Git: https://github.com/blueberrypieos/pieboot.git

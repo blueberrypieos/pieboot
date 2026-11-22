@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   build:
-    uses: blueberrypieos/workflows/.github/workflows/build.yml@v1
+    uses: blueberrypieos/workflows/.github/workflows/build.yml@v3
   attest:
     needs: build
     if: >-
@@ -21,7 +21,7 @@ jobs:
       id-token: write
       attestations: write
       artifact-metadata: write
-    uses: blueberrypieos/workflows/.github/workflows/attest.yml@v1
+    uses: blueberrypieos/workflows/.github/workflows/attest.yml@v3
     with:
       artifact: ${{ needs.build.outputs.artifact }}
   release:
@@ -29,6 +29,6 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag'
     permissions:
       contents: write
-    uses: blueberrypieos/workflows/.github/workflows/release.yml@v1
+    uses: blueberrypieos/workflows/.github/workflows/release.yml@v3
     with:
       artifact: ${{ needs.build.outputs.artifact }}

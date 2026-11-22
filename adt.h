@@ -5,6 +5,16 @@
 #include "lib.h"
 
 #define ADT_PROP_NAME_LEN 32
+/*
+ * A property whose name has ADT_PROP_NAME_LEN to ADT_LONG_NAME_MAX
+ * characters, which xnu's format cannot hold, is stored as
+ * ADT_LONG_PREFIX and a number counting from 0 in its node. Its value is
+ * the name, a NUL, then the property's value. xnu's IODeviceTreeAlloc
+ * gives it its name back. adt_set leaves out a property with a longer
+ * name, and one whose name starts with ADT_LONG_PREFIX.
+ */
+#define ADT_LONG_PREFIX "pieboot,long,"
+#define ADT_LONG_NAME_MAX 255
 
 struct adt_prop {
 	char name[ADT_PROP_NAME_LEN];
@@ -15,7 +25,7 @@ struct adt_prop {
 
 struct adt_node {
 	struct adt_prop *props, *last_prop;
-	unsigned nprops;
+	unsigned nprops, nlong;
 	struct adt_node *child, *last_child, *sibling;
 	unsigned nchildren;
 };

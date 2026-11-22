@@ -63,6 +63,12 @@ through `place-test.c`'s layouts.
    - **`interrupt-parent`** is written out explicitly wherever the FDT
      inherits it, because IOKit doesn't follow FDT inheritance.
    - **Other properties** keep their FDT (big-endian) encoding.
+   - **Long names:** the ADT holds property names of up to 31 characters.
+     A property with a name of 32 to 255 characters is written as
+     `pieboot,long,N`, N counting from 0 in its node, and its value is the
+     name, a NUL, then the property's value. The kernel's IODeviceTreeAlloc
+     gives it back its name. A property with a longer name, or one whose
+     name starts with `pieboot,long,`, is left out with a message.
 4. Places the DT, RAM disk (a copy) and `boot_args` after the kernel. The command
    line is FDT `bootargs` plus the bundle's `bootargs`. The RAM disk is
    padded with zeroes to a 16 KB multiple, because memdev counts whole pages.

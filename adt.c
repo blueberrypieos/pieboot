@@ -30,23 +30,75 @@ adt_get(struct adt_node *n, const char *name)
 	return NULL;
 }
 
+static struct adt_prop *
+adt_append(struct adt_node *n, const char *name)
+{
+	struct adt_prop *p = balloc(sizeof(*p));
+
+	strlcpy(p->name, name, sizeof(p->name));
+	if (n->last_prop) {
+		n->last_prop->next = p;
+	} else {
+		n->props = p;
+	}
+	n->last_prop = p;
+	n->nprops++;
+	return p;
+}
+
+/* A long-named property, under ADT_LONG_PREFIX (adt.h). */
+static struct adt_prop *
+adt_set_long(struct adt_node *n, const char *name, const void *val, uint32_t len)
+{
+	size_t prefix = sizeof(ADT_LONG_PREFIX) - 1, nlen = strlen(name) + 1;
+	struct adt_prop *p = NULL;
+
+	for (struct adt_prop *q = n->props; q && !p; q = q->next) {
+		if (!strncmp(q->name, ADT_LONG_PREFIX, prefix) && q->len >= nlen && !memcmp(q->val, name, nlen)) {
+			p = q;
+		}
+	}
+	if (!p) {
+		char key[ADT_PROP_NAME_LEN];
+		snprintf(key, sizeof(key), "%s%u", ADT_LONG_PREFIX, n->nlong++);
+		p = adt_append(n, key);
+	}
+	p->val = balloc(nlen + len);
+	memcpy(p->val, name, nlen);
+	memcpy((uint8_t *)p->val + nlen, val, len);
+	p->len = (uint32_t)(nlen + len);
+	return p;
+}
+
+static const char *
+adt_name(struct adt_node *n)
+{
+	struct adt_prop *p = adt_get(n, "name");
+
+	return p ? (const char *)p->val : "";
+}
+
 struct adt_prop *
 adt_set(struct adt_node *n, const char *name, const void *val, uint32_t len)
 {
-	if (strlen(name) >= ADT_PROP_NAME_LEN) {
-		return NULL;                    /* cannot be represented */
+	size_t nlen = strlen(name);
+
+	if (nlen > ADT_LONG_NAME_MAX) {
+		printf("pieboot: %s: property %.*s... has a name of %zu characters, more than %d; left out\n",
+		    adt_name(n), 32, name, nlen, ADT_LONG_NAME_MAX);
+		return NULL;
+	}
+	if (!strncmp(name, ADT_LONG_PREFIX, sizeof(ADT_LONG_PREFIX) - 1)) {
+		printf("pieboot: %s: property %s: a name that starts with " ADT_LONG_PREFIX " is pieboot's own; left out\n",
+		    adt_name(n), name);
+		return NULL;
+	}
+	if (nlen >= ADT_PROP_NAME_LEN) {
+		return adt_set_long(n, name, val, len);
 	}
 	struct adt_prop *p = adt_get(n, name);
 	if (!p) {
-		p = balloc(sizeof(*p));
-		strlcpy(p->name, name, sizeof(p->name));
-		if (n->last_prop) {
-			n->last_prop->next = p;
-		} else {
-			n->props = p;
-		}
-		n->last_prop = p;
-		n->nprops++;
+		p = adt_append(n, name);
 	}
 	p->val = balloc(len ? len : 1);
 	memcpy(p->val, val, len);
