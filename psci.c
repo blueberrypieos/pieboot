@@ -141,12 +141,12 @@ pieboot_el2_sync(struct el2_frame *f)
 	f->x[0] = (uint64_t)ret;
 }
 
-void pieboot_el2_unexpected(uint64_t esr, uint64_t elr);
+void pieboot_el2_unexpected(uint64_t esr, uint64_t elr, uint64_t far);
 
 void
-pieboot_el2_unexpected(uint64_t esr, uint64_t elr)
+pieboot_el2_unexpected(uint64_t esr, uint64_t elr, uint64_t far)
 {
-	printf("pieboot: unexpected exception at EL2, ESR 0x%lx ELR 0x%lx\n", esr, elr);
+	printf("pieboot: unexpected exception at EL2, ESR 0x%lx ELR 0x%lx FAR 0x%lx\n", esr, elr, far);
 }
 
 bool

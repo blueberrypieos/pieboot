@@ -45,6 +45,11 @@ bool fdt_prop_u32(const struct fdt_node *n, const char *name, uint32_t *out);
 uint32_t fdt_phandle(const struct fdt_node *n);
 size_t fdt_basename(const struct fdt_node *n, char *buf, size_t size);
 
+/* A new node, the first child of parent; and properties for it, the value copied, in FDT encoding. */
+struct fdt_node *fdt_add_node(struct fdt_node *parent, const char *name);
+void fdt_add_prop(struct fdt_node *n, const char *name, const void *val, uint32_t len);
+void fdt_add_prop_u32(struct fdt_node *n, const char *name, uint32_t val);
+
 unsigned fdt_address_cells(const struct fdt_node *bus);
 unsigned fdt_size_cells(const struct fdt_node *bus);
 uint64_t fdt_read_cells(const uint8_t *p, unsigned ncells);

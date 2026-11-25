@@ -343,6 +343,26 @@ panic_nokernel(const char *fmt, ...)
 	}
 }
 
+/*
+ * Clean and invalidate the data cache lines of [start, end) to the point of
+ * coherency. pieboot runs with the MMU off (its stores bypass the caches),
+ * and xnu turns the caches on without invalidating them first (it expects
+ * them clean): lines the firmware left for this memory, stale or dirty,
+ * must not outlive pieboot's writes there.
+ */
+void
+dcache_clean_invalidate(uint64_t start, uint64_t end)
+{
+	uint64_t ctr;
+	__asm__ volatile ("mrs %0, ctr_el0" : "=r"(ctr));
+	uint64_t line = 4ULL << ((ctr >> 16) & 0xf);    /* DminLine, in words */
+	__asm__ volatile ("dsb sy" ::: "memory");
+	for (uint64_t a = start & ~(line - 1); a < end; a += line) {
+		__asm__ volatile ("dc civac, %0" :: "r"(a) : "memory");
+	}
+	__asm__ volatile ("dsb sy" ::: "memory");
+}
+
 /* 4MB is plenty for the parsed FDT and the xnu device tree under construction. */
 static uint8_t heap[4 << 20] __attribute__((aligned(16)));
 static size_t heap_used;

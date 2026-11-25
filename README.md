@@ -20,10 +20,12 @@ make
 
 This builds `pieboot.bin` with clang-20 and ld.lld-20 (Ubuntu's `clang-20`,
 `lld-20` and `llvm-20` packages). It is position-independent and relocates
-itself.
+itself. pieboot runs with the MMU off, so every access is to Device memory,
+where an unaligned access faults. It is built with `-mstrict-align` for that.
 
-`make test` runs the kernel's placement (`place.c`) on the build host,
-through `place-test.c`'s layouts.
+`make test` runs the kernel's placement (`place.c`) and the VOP2 overlay's
+layer selection (`vop2ovl.c`) on the build host, through `place-test.c`'s
+layouts and `vop2ovl-test.c`'s cases.
 
 ## What it does
 
@@ -171,6 +173,30 @@ asks the VideoCore firmware for a 32 bpp framebuffer at the current display
 size, or 1024×768 when none is reported. The kernel gets it in
 `boot_args.Video`.
 
+On RK3566 and RK3568 boards without one, `rkdisplay.c` brings HDMI up
+itself when a display is connected:
+
+- **Mode:** 640x480 at 60 Hz, sent as DVI. `pieboot.hdmi=` picks another.
+- **Path:** HPLL makes the pixel clock. The VOP2's video port 0 scans out
+  one window, Esmart0, or Smart0 when another video port shows Esmart0.
+  The DesignWare HDMI TX and its PHY, `dwhdmi.c`, send the picture.
+- **Framebuffer:** 32 bpp, cleared, at the top of RAM just below the panic
+  region. pieboot adds a `simple-framebuffer` node for it under `/chosen`,
+  uses it as any other, and keeps it out of the kernel's memory. The last
+  RAM range must end within the first 4 GB, as the VOP2's window address
+  has 32 bits.
+- **No display:** when the PHY sees no hot-plug signal within 20 ms,
+  pieboot leaves the hardware as it found it.
+- **Failure:** when HDMI does not come up, pieboot puts the VOP2's
+  settings, the clocks, HPLL and the power domain back as it found them,
+  and boots on without HDMI.
+- **Steps:** with `-v` or `pieboot.hdmi=probe`, pieboot prints each step
+  before it starts, with the state of the clocks, resets and power domain.
+  A RAM console then shows where a hang happened.
+- **Other video ports:** their windows keep their video port and their order.
+- **Not done:** EDID, hot plug after boot, audio, and outputs other than
+  HDMI.
+
 By default the screen is black with a pie in the middle, and pieboot's
 messages go only to the UART. The kernel gets `v_display` = 1, graphics
 mode, as from `boot.efi`: xnu keeps its text console off the screen, so
@@ -186,6 +212,8 @@ the pie stays.
   the error is on the screen instead.
 - **Any other fatal error** turns the screen to text, with pieboot's
   messages so far (the last 4 KB) and the error.
+- **An unexpected exception** at EL2 is printed with its syndrome, return
+  address and fault address, and pieboot stops there.
 - **A previous boot's panic log** is shown as text for 15 seconds, then
   the pie comes back.
 
@@ -217,6 +245,15 @@ pieboot reads these from the FDT's `bootargs` and the bundle's:
   elsewhere.
 - `pieboot.fallback=1` or `pieboot.fallback=flag`: a fallback boot, below.
   It is read from the FDT's `bootargs` only.
+- `pieboot.hdmi=LIST`: HDMI on RK3566 and RK3568 boards, a comma-separated
+  list of `off`; `640x480`, the default, or `1280x720`; `dvi`, the default,
+  or `hdmi`, which adds an AVI InfoFrame; `bars`, the VOP2's colour bars
+  instead of a framebuffer, to check the link; `probe`, eight test pictures
+  of 4 or 8 s each before the console, which tell a missing signal from a
+  missing window and show where the window path fails. Each is named on
+  the console. Then the hardware is as without them. Read from the FDT's
+  `bootargs` and the bundle's, which come last. HDMI stays off with
+  `pieboot.addmem` or `pieboot.memhole`.
 - `pieboot.ramcons=BASE,SIZE`: pieboot's console also goes to a RAM
   console there, in the layout of Linux's ramoops console zone, so that
   the next system can read it after a reset. The range must lie outside
@@ -296,4 +333,6 @@ LED signals where it got to.
 
 pieboot is under the BSD 2-Clause license (see `LICENSE`). The console
 font in `font.c` is Spleen 8x16 by Frederic Cambus, also BSD 2-Clause. Its
-copyright notice is kept in that file.
+copyright notice is kept in that file. `dwhdmi.c` comes from NetBSD's
+DesignWare HDMI driver by Oleksandr Tymoshenko and Jared D. McNeill, also
+BSD 2-Clause, and keeps their notices.

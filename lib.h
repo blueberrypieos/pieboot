@@ -35,6 +35,9 @@ __attribute__((noreturn)) void panic_nokernel(const char *fmt, ...) __attribute_
 /* Bump allocator for boot-time data structures (never freed). */
 void *balloc(size_t size);
 
+/* Clean and invalidate the data cache lines of [start, end) to the point of coherency. */
+void dcache_clean_invalidate(uint64_t start, uint64_t end);
+
 static inline uint32_t be32(const void *p)
 {
 	const uint8_t *b = p;
@@ -60,6 +63,22 @@ read_cntpct(void)
 	uint64_t v;
 	__asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r"(v));
 	return v;
+}
+
+/* ISR_EL1: bit 8 a physical SError pending, bit 7 an IRQ, bit 6 an FIQ. */
+static inline uint64_t
+read_isr(void)
+{
+	uint64_t v;
+	__asm__ volatile ("mrs %0, isr_el1" : "=r"(v));
+	return v;
+}
+
+/* Wait until every earlier memory access has completed. */
+static inline void
+dsb_sy(void)
+{
+	__asm__ volatile ("dsb sy" ::: "memory");
 }
 
 #endif /* PIEBOOT_LIB_H */

@@ -32,6 +32,7 @@
 #include "fbcon.h"
 #include "led.h"
 #include "place.h"
+#include "rkdisplay.h"
 
 #define SZ_16K           0x4000ULL
 #define SZ_2M            0x200000ULL
@@ -208,26 +209,6 @@ struct panic_header {
 	uint32_t panic_log_offset;
 	uint32_t panic_log_len;
 } __attribute__((packed));
-
-/*
- * Clean and invalidate the data cache lines of [start, end) to the point of
- * coherency. pieboot runs with the MMU off (its stores bypass the caches),
- * and xnu turns the caches on without invalidating them first (it expects
- * them clean): lines the firmware left for this memory, stale or dirty,
- * must not outlive pieboot's writes there.
- */
-static void
-dcache_clean_invalidate(uint64_t start, uint64_t end)
-{
-	uint64_t ctr;
-	__asm__ volatile ("mrs %0, ctr_el0" : "=r"(ctr));
-	uint64_t line = 4ULL << ((ctr >> 16) & 0xf);    /* DminLine, in words */
-	__asm__ volatile ("dsb sy" ::: "memory");
-	for (uint64_t a = start & ~(line - 1); a < end; a += line) {
-		__asm__ volatile ("dc civac, %0" :: "r"(a) : "memory");
-	}
-	__asm__ volatile ("dsb sy" ::: "memory");
-}
 
 /* Print the panic log a previous boot left in the panic region (as text on the screen). */
 static void
@@ -1441,6 +1422,141 @@ place_kernel(const struct machine *m, const struct Boot_Video *video, uint64_t v
 	return phys_base;
 }
 
+/* Every range of every /memory node into r, at most max of them; how many. */
+static unsigned
+fdt_memory(const struct fdt *fdt, struct range *r, unsigned max)
+{
+	unsigned n = 0;
+	for (struct fdt_node *c = fdt->root->child; c; c = c->sibling) {
+		const char *type = fdt_prop_str(c, "device_type");
+		if (!type || strcmp(type, "memory")) {
+			continue;
+		}
+		for (unsigned i = 0; i < fdt_reg_count(c) && n < max; i++) {
+			uint64_t base, size;
+			if (fdt_reg(c, i, &base, &size) && size) {
+				r[n].base = base;
+				r[n].end = base + size;
+				n++;
+			}
+		}
+	}
+	return n;
+}
+
+/* The n ranges sorted by base, those that touch merged; how many are left. */
+static unsigned
+merge_ram(struct range *r, unsigned n)
+{
+	for (unsigned i = 1; i < n; i++) {             /* insertion sort by base */
+		for (unsigned j = i; j > 0 && r[j].base < r[j - 1].base; j--) {
+			struct range t = r[j];
+			r[j] = r[j - 1];
+			r[j - 1] = t;
+		}
+	}
+	unsigned merged = n ? 1 : 0;
+	for (unsigned i = 1; i < n; i++) {
+		if (r[i].base <= r[merged - 1].end) {
+			r[merged - 1].end = MAX(r[merged - 1].end, r[i].end);
+		} else {
+			r[merged++] = r[i];
+		}
+	}
+	return merged;
+}
+
+/* A bundle's boot-args, before open_payload() checks the bundle; NULL if it has none. */
+static const char *
+peek_bootargs(uint64_t start, uint64_t end, size_t *len)
+{
+	const struct bundle_header *h = (const void *)(uintptr_t)start;
+	uint64_t size = end - start;
+	const char *args = NULL;
+	*len = 0;
+	if (!start || end <= start || size < sizeof(*h) || memcmp(h->magic, BUNDLE_MAGIC, 8) || h->version < 1 ||
+	    h->version > 2 || h->count > (size - sizeof(*h)) / sizeof(h->entries[0])) {
+		return NULL;
+	}
+	for (uint32_t i = 0; i < h->count; i++) {
+		const struct bundle_entry *e = &h->entries[i];
+		if (!strncmp(e->name, "bootargs", sizeof(e->name)) && e->offset <= size && e->size <= size - e->offset) {
+			args = (const char *)(uintptr_t)(start + e->offset);
+			*len = e->size;
+		}
+	}
+	return args;
+}
+
+/*
+ * HDMI on RK3566 and RK3568 boards (rkdisplay.c), with pieboot.hdmi= and
+ * -v from the FDT's boot-args or the bundle's: a framebuffer just below the
+ * panic region, which pieboot_main() places at the top of the last RAM
+ * range, clear of pieboot, the FDT, the initrd, the /memreserve/ entries
+ * and the enabled /reserved-memory ranges. Not with pieboot.addmem or
+ * pieboot.memhole, which change the RAM ranges.
+ */
+static void
+rk_display(struct machine *m, const char *fdt_args, size_t fdt_args_size, bool verbose, uint64_t *fb,
+    uint64_t *fb_size)
+{
+	if (fdt_find_compatible(m->fdt.root, "simple-framebuffer") || !rk_hdmi_board(&m->fdt)) {
+		return;
+	}
+	struct fdt_node *chosen = fdt_path(&m->fdt, "/chosen");
+	uint64_t initrd_start = chosen_addr(chosen, "linux,initrd-start");
+	uint64_t initrd_end = chosen_addr(chosen, "linux,initrd-end");
+	size_t bundle_args_size;
+	const char *bundle_args = peek_bootargs(initrd_start, initrd_end, &bundle_args_size);
+	char opts[64] = "", value[8];
+	if (bootarg(fdt_args, fdt_args_size, "pieboot.addmem=", value, sizeof(value)) ||
+	    bootarg(fdt_args, fdt_args_size, "pieboot.memhole=", value, sizeof(value)) ||
+	    bootarg(bundle_args, bundle_args_size, "pieboot.addmem=", value, sizeof(value)) ||
+	    bootarg(bundle_args, bundle_args_size, "pieboot.memhole=", value, sizeof(value))) {
+		printf("pieboot: HDMI: not with pieboot.addmem or pieboot.memhole; HDMI left off\n");
+		return;
+	}
+	bootarg(fdt_args, fdt_args_size, "pieboot.hdmi=", opts, sizeof(opts));
+	bootarg(bundle_args, bundle_args_size, "pieboot.hdmi=", opts, sizeof(opts));
+
+	struct range ram[MAX_RAM_RANGES];
+	unsigned n = merge_ram(ram, fdt_memory(&m->fdt, ram, MAX_RAM_RANGES));
+	if (!n) {
+		return;
+	}
+	struct range *top = &ram[n - 1];
+	uint64_t end = top->end;
+	if (top->end - top->base > 2 * PANIC_REGION_SIZE) {
+		end = ALIGN_DOWN(top->end - PANIC_REGION_SIZE, SZ_16K);
+	}
+	struct fdt_node *rsv = fdt_path(&m->fdt, "/reserved-memory");
+	unsigned nrsv = 0;
+	for (struct fdt_node *c = rsv ? rsv->child : NULL; c; c = c->sibling) {
+		nrsv += fdt_reg_count(c);
+	}
+	struct place_range *busy = balloc(sizeof(*busy) * (4 + m->fdt.nreserves + nrsv));
+	unsigned nbusy = 0;
+	busy[nbusy++] = (struct place_range){ 0, top->base };
+	busy[nbusy++] = (struct place_range){ (uint64_t)(uintptr_t)__image_start, (uint64_t)(uintptr_t)__image_end };
+	busy[nbusy++] = (struct place_range){ m->fdt.pa, m->fdt.pa + m->fdt.size };
+	busy[nbusy++] = (struct place_range){ initrd_start, initrd_end };
+	for (unsigned i = 0; i < m->fdt.nreserves; i++) {
+		busy[nbusy++] = (struct place_range){ m->fdt.reserves[i].addr,
+			m->fdt.reserves[i].addr + m->fdt.reserves[i].size };
+	}
+	for (struct fdt_node *c = rsv ? rsv->child : NULL; c; c = c->sibling) {
+		const char *status = fdt_prop_str(c, "status");
+		for (unsigned i = 0; i < fdt_reg_count(c) && (!status || !strcmp(status, "okay") || !strcmp(status, "ok")); i++) {
+			uint64_t base, size;
+			if (fdt_reg(c, i, &base, &size)) {
+				busy[nbusy++] = (struct place_range){ base, base + size };
+			}
+		}
+	}
+	rk_hdmi(&m->fdt, opts[0] ? opts : NULL, verbose || bootflag(bundle_args, bundle_args_size, "-v"), end, busy, nbusy,
+	    fb, fb_size);
+}
+
 void pieboot_main(void *fdt_blob);
 
 void
@@ -1504,10 +1620,15 @@ pieboot_main(void *fdt_blob)
 	 */
 	bool verbose = bootflag(fdt_bootargs, fdt_bootargs_size, "-v");
 	static struct Boot_Video video;
+	uint64_t rk_fb = 0, rk_fb_size = 0;
+	rk_display(&m, fdt_bootargs, fdt_bootargs_size, verbose, &rk_fb, &rk_fb_size);
 	bool have_video = dt_framebuffer(&m.fdt, &video) || (mbox_init(&m.fdt) && mbox_framebuffer(&video));
 	if (have_video) {
 		fbcon_init(video.v_baseAddr, (uint32_t)video.v_width, (uint32_t)video.v_height,
-		    (uint32_t)video.v_rowBytes, (uint32_t)(video.v_depth & 0xff), verbose);
+		    (uint32_t)video.v_rowBytes, (uint32_t)(video.v_depth & 0xff), verbose && !rk_fb_size);
+		if (verbose && rk_fb_size) {
+			fbcon_text();
+		}
 	}
 	const char *model = fdt_prop_str(m.fdt.root, "model");
 	printf("\npieboot: boot shim for xnu, EL%u, FDT at %p%s%s\n", current_el(), fdt_blob,
@@ -1546,42 +1667,14 @@ pieboot_main(void *fdt_blob)
 	 * kernel manages the span from the first to the last; the gaps between
 	 * (the VideoCore carve-out, the peripheral window) become dram-holes.
 	 */
-	for (struct fdt_node *c = m.fdt.root->child; c; c = c->sibling) {
-		const char *type = fdt_prop_str(c, "device_type");
-		if (!type || strcmp(type, "memory")) {
-			continue;
-		}
-		for (unsigned i = 0; i < fdt_reg_count(c) && m.nram < MAX_RAM_RANGES; i++) {
-			uint64_t base, size;
-			if (fdt_reg(c, i, &base, &size) && size) {
-				m.ram[m.nram].base = base;
-				m.ram[m.nram].end = base + size;
-				m.nram++;
-			}
-		}
-	}
+	m.nram = fdt_memory(&m.fdt, m.ram, MAX_RAM_RANGES);
 	select_kernel(&m.fdt, &pl, fdt_bootargs);
 	scan_addmem(&m, fdt_bootargs, fdt_bootargs ? strlen(fdt_bootargs) + 1 : 0);
 	scan_addmem(&m, pl.bootargs, pl.bootargs_size);
 	if (!m.nram) {
 		panic("no /memory node");
 	}
-	for (unsigned i = 1; i < m.nram; i++) {        /* insertion sort by base */
-		for (unsigned j = i; j > 0 && m.ram[j].base < m.ram[j - 1].base; j--) {
-			struct range t = m.ram[j];
-			m.ram[j] = m.ram[j - 1];
-			m.ram[j - 1] = t;
-		}
-	}
-	unsigned merged = 1;
-	for (unsigned i = 1; i < m.nram; i++) {
-		if (m.ram[i].base <= m.ram[merged - 1].end) {
-			m.ram[merged - 1].end = MAX(m.ram[merged - 1].end, m.ram[i].end);
-		} else {
-			m.ram[merged++] = m.ram[i];
-		}
-	}
-	m.nram = merged;
+	m.nram = merge_ram(m.ram, m.nram);
 	scan_memhole(&m, fdt_bootargs, fdt_bootargs ? strlen(fdt_bootargs) + 1 : 0);
 	scan_memhole(&m, pl.bootargs, pl.bootargs_size);
 	/* RAM that pieboot.addmem added: the RAM console must stay clear of it too. */
@@ -1603,6 +1696,14 @@ pieboot_main(void *fdt_blob)
 		m.panic_pa = ALIGN_DOWN(last->end - m.panic_size, SZ_16K);
 		last->end = m.panic_pa;
 		show_previous_panic(&m, fallback != FALLBACK_ARMED);
+	}
+	if (rk_fb_size) {
+		if (last->end == rk_fb + rk_fb_size && rk_fb > last->base) {
+			last->end = rk_fb;
+		} else {
+			printf("pieboot: HDMI: the framebuffer 0x%lx-0x%lx is not at the top of RAM; the kernel keeps it out as a hole\n",
+			    rk_fb, rk_fb + rk_fb_size);
+		}
 	}
 	m.ram_base = m.ram[0].base;
 	m.ram_size = m.ram[m.nram - 1].end - m.ram_base;

@@ -1,6 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: pieboot
 Source: https://github.com/blueberrypieos/pieboot
+ https://github.com/NetBSD/src (commit abd71f3234d37c32156141583b0e22bd6a54f885, sys/dev/ic/dw_hdmi.c, sys/dev/ic/dw_hdmi_phy.c and sys/arch/arm/rockchip/rk_dwhdmi.c, dwhdmi.c)
 Files-Excluded: *
 Files-Included:
  LICENSE
@@ -8,6 +9,8 @@ Files-Included:
  adt.c
  adt.h
  boot_args.h
+ dwhdmi.c
+ dwhdmi.h
  fallback.c
  fallback.h
  fbcon.c
@@ -32,12 +35,22 @@ Files-Included:
  place.h
  psci.c
  psci.h
+ rkdisplay.c
+ rkdisplay.h
  start.S
  uart.c
  uart.h
+ vop2ovl.c
+ vop2ovl.h
 
 Files: *
 Copyright: 2026 The pieboot authors
+License: BSD-2-Clause
+
+Files: dwhdmi.c
+Copyright: 2015 Oleksandr Tymoshenko <gonzo@freebsd.org>
+ 2019 Jared D. McNeill <jmcneill@invisible.ca>
+ 2026 The pieboot authors
 License: BSD-2-Clause
 
 Files: font.c

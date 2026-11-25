@@ -41,6 +41,14 @@ entry:
 	adr	x0, _start
 	bl	pieboot_relocate
 
+	mrs	x1, CurrentEL
+	cmp	x1, #(2 << 2)
+	b.ne	4f
+	adrp	x1, pieboot_el2_vectors
+	add	x1, x1, :lo12:pieboot_el2_vectors
+	msr	vbar_el2, x1
+	isb
+4:
 	mov	x0, x19
 	bl	pieboot_main
 3:	wfe
@@ -221,6 +229,7 @@ el2_lower_sync:
 el2_unexpected:
 	mrs	x0, esr_el2
 	mrs	x1, elr_el2
+	mrs	x2, far_el2
 	bl	pieboot_el2_unexpected
 4:	wfe
 	b	4b

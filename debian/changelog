@@ -1,3 +1,17 @@
+pieboot (0.1.3) blueberry-pie-os; urgency=medium
+
+  * On RK3566 and RK3568 boards, HDMI shows pieboot's screen and the
+    kernel's console at 640x480 when a display is connected.
+    pieboot.hdmi= picks 1280x720, an AVI InfoFrame, colour bars or a
+    sequence of test pictures. With -v, each step of the bring-up is
+    printed before it starts, and the status once it runs.
+  * An unexpected exception at EL2 is printed with its fault address, and
+    pieboot stops there.
+  * Built with -mstrict-align. pieboot runs with the MMU off, where an
+    unaligned access faults.
+
+ -- Maxwell <maxwell@blueberrypieos.com>  Wed, 25 Nov 2026 10:58:36 +0000
+
 pieboot (0.1.2) blueberry-pie-os; urgency=medium
 
   * GICv3 interrupts convert as a GICv2's do, and with a GICv3 EL1 gets

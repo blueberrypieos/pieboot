@@ -265,6 +265,49 @@ fdt_prop_u32(const struct fdt_node *n, const char *name, uint32_t *out)
 	return true;
 }
 
+static const char *
+copy_str(const char *s)
+{
+	size_t len = strlen(s) + 1;
+	char *c = balloc(len);
+	memcpy(c, s, len);
+	return c;
+}
+
+struct fdt_node *
+fdt_add_node(struct fdt_node *parent, const char *name)
+{
+	struct fdt_node *n = balloc(sizeof(*n));
+	n->name = copy_str(name);
+	n->parent = parent;
+	n->sibling = parent->child;
+	parent->child = n;
+	return n;
+}
+
+void
+fdt_add_prop(struct fdt_node *n, const char *name, const void *val, uint32_t len)
+{
+	struct fdt_prop *p = balloc(sizeof(*p));
+	uint8_t *v = balloc(len ? len : 1);
+	memcpy(v, val, len);
+	p->name = copy_str(name);
+	p->val = v;
+	p->len = len;
+	struct fdt_prop **tail = &n->props;
+	while (*tail) {
+		tail = &(*tail)->next;
+	}
+	*tail = p;
+}
+
+void
+fdt_add_prop_u32(struct fdt_node *n, const char *name, uint32_t val)
+{
+	uint8_t be[4] = { (uint8_t)(val >> 24), (uint8_t)(val >> 16), (uint8_t)(val >> 8), (uint8_t)val };
+	fdt_add_prop(n, name, be, sizeof(be));
+}
+
 unsigned
 fdt_address_cells(const struct fdt_node *bus)
 {

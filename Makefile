@@ -6,14 +6,15 @@ CC      := clang-20
 LD      := ld.lld-20
 OBJCOPY := llvm-objcopy-20
 
-CFLAGS  := --target=aarch64-none-elf -mcpu=cortex-a53+nocrypto -mgeneral-regs-only \
+CFLAGS  := --target=aarch64-none-elf -mcpu=cortex-a53+nocrypto -mgeneral-regs-only -mstrict-align \
            -ffreestanding -fno-builtin -nostdlib -fPIE -fvisibility=hidden \
            -fno-stack-protector -fno-common -O2 -g -std=c11 \
            -Wall -Wextra -Werror -Wno-unused-parameter
 ASFLAGS := --target=aarch64-none-elf -mcpu=cortex-a53+nocrypto -fPIE -g
 LDFLAGS := -static -pie --no-dynamic-linker -z norelro -z noexecstack -T link.ld
 
-OBJS := start.o main.o fdt.o adt.o macho.o lib.o uart.o psci.o mbox.o fallback.o fbcon.o font.o pie.o led.o place.o
+OBJS := start.o main.o fdt.o adt.o macho.o lib.o uart.o psci.o mbox.o fallback.o fbcon.o font.o pie.o led.o place.o \
+        rkdisplay.o dwhdmi.o vop2ovl.o
 
 all: pieboot.bin
 
@@ -29,15 +30,19 @@ pieboot.bin: pieboot.elf
 %.o: %.S
 	$(CC) $(ASFLAGS) -c -o $@ $<
 
-# place.c's placement of the kernel, run on the build host.
+# place.c's placement of the kernel and vop2ovl.c's overlay, run on the build host.
 HOSTCC  ?= cc
-test: place-test
+test: place-test vop2ovl-test
 	./place-test
+	./vop2ovl-test
 
 place-test: place-test.c place.c place.h
 	$(HOSTCC) -O2 -std=c11 -Wall -Wextra -Werror -o $@ place-test.c place.c
 
+vop2ovl-test: vop2ovl-test.c vop2ovl.c vop2ovl.h
+	$(HOSTCC) -O2 -std=c11 -Wall -Wextra -Werror -o $@ vop2ovl-test.c vop2ovl.c
+
 clean:
-	rm -f *.o pieboot.elf pieboot.bin place-test
+	rm -f *.o pieboot.elf pieboot.bin place-test vop2ovl-test
 
 .PHONY: all clean test
