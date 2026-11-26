@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
  * The RK3568 VOP2 overlay's layer and port selection with one window as
- * video port 0's only layer (vop2ovl.c). Plain arithmetic, no hardware:
- * vop2ovl-test.c runs it on the build host (make test).
+ * the only layer of video port 0 or 1 (vop2ovl.c). Plain arithmetic, no
+ * hardware: vop2ovl-test.c runs it on the build host (make test).
  */
 #ifndef PIEBOOT_VOP2OVL_H
 #define PIEBOOT_VOP2OVL_H
@@ -28,15 +28,20 @@ struct vop2_ovl {
 unsigned vop2_win_port(uint32_t port_sel, unsigned win);
 
 /*
- * The overlay for window win on video port 0, from the LAYER_SEL and
- * PORT_SEL in use. If video port 0 already has win among its layers, the
- * selection stays, and the other windows of video port 0 are to be turned
- * off. Otherwise win becomes the one layer of video port 0, at the bottom.
- * The other windows keep their video port and their order. The windows of
- * video port 0, or of the reserved port, move to video port 2 and are to
- * be turned off. False if win is not a window, or if video port 1 would be
- * left without a layer.
+ * The overlay for window win on video port vp, 0 or 1, from the LAYER_SEL
+ * and PORT_SEL in use. If vp already has win among its layers, the
+ * selection stays, and the other windows of vp are to be turned off.
+ * Otherwise win becomes the one layer of vp: at the bottom for video port
+ * 0, right after video port 0's layers for video port 1. The other windows
+ * keep their video port and their order. The windows of vp, or of the
+ * reserved port, move to video port 2 and are to be turned off; one of
+ * them stays on the other of video ports 0 and 1 if that port would be
+ * left without a layer. False if vp is not 0 or 1, if win is not a window,
+ * or if no window is left for the other port.
  */
+bool vop2_overlay_vp(uint32_t layer_sel, uint32_t port_sel, unsigned vp, unsigned win, struct vop2_ovl *out);
+
+/* vop2_overlay_vp() for video port 0. */
 bool vop2_overlay(uint32_t layer_sel, uint32_t port_sel, unsigned win, struct vop2_ovl *out);
 
 #endif

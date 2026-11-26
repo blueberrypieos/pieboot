@@ -33,6 +33,7 @@
 #include "led.h"
 #include "place.h"
 #include "rkdisplay.h"
+#include "rkdsi.h"
 
 #define SZ_16K           0x4000ULL
 #define SZ_2M            0x200000ULL
@@ -1489,18 +1490,20 @@ peek_bootargs(uint64_t start, uint64_t end, size_t *len)
 }
 
 /*
- * HDMI on RK3566 and RK3568 boards (rkdisplay.c), with pieboot.hdmi= and
- * -v from the FDT's boot-args or the bundle's: a framebuffer just below the
- * panic region, which pieboot_main() places at the top of the last RAM
- * range, clear of pieboot, the FDT, the initrd, the /memreserve/ entries
- * and the enabled /reserved-memory ranges. Not with pieboot.addmem or
- * pieboot.memhole, which change the RAM ranges.
+ * HDMI on RK3566 and RK3568 boards (rkdisplay.c), else the built-in DSI
+ * panel (rkdsi.c), with pieboot.hdmi=, pieboot.panel= and -v from the FDT's
+ * boot-args or the bundle's: a framebuffer just below the panic region,
+ * which pieboot_main() places at the top of the last RAM range, clear of
+ * pieboot, the FDT, the initrd, the /memreserve/ entries and the enabled
+ * /reserved-memory ranges. The panel is dark while HDMI has the console.
+ * Not with pieboot.addmem or pieboot.memhole, which change the RAM ranges.
  */
 static void
 rk_display(struct machine *m, const char *fdt_args, size_t fdt_args_size, bool verbose, uint64_t *fb,
     uint64_t *fb_size)
 {
-	if (fdt_find_compatible(m->fdt.root, "simple-framebuffer") || !rk_hdmi_board(&m->fdt)) {
+	bool hdmi = rk_hdmi_board(&m->fdt), panel = rk_panel_board(&m->fdt);
+	if (fdt_find_compatible(m->fdt.root, "simple-framebuffer") || (!hdmi && !panel)) {
 		return;
 	}
 	struct fdt_node *chosen = fdt_path(&m->fdt, "/chosen");
@@ -1508,16 +1511,23 @@ rk_display(struct machine *m, const char *fdt_args, size_t fdt_args_size, bool v
 	uint64_t initrd_end = chosen_addr(chosen, "linux,initrd-end");
 	size_t bundle_args_size;
 	const char *bundle_args = peek_bootargs(initrd_start, initrd_end, &bundle_args_size);
-	char opts[64] = "", value[8];
+	char opts[64] = "", panel_opts[64] = "", value[8];
 	if (bootarg(fdt_args, fdt_args_size, "pieboot.addmem=", value, sizeof(value)) ||
 	    bootarg(fdt_args, fdt_args_size, "pieboot.memhole=", value, sizeof(value)) ||
 	    bootarg(bundle_args, bundle_args_size, "pieboot.addmem=", value, sizeof(value)) ||
 	    bootarg(bundle_args, bundle_args_size, "pieboot.memhole=", value, sizeof(value))) {
-		printf("pieboot: HDMI: not with pieboot.addmem or pieboot.memhole; HDMI left off\n");
+		if (hdmi) {
+			printf("pieboot: HDMI: not with pieboot.addmem or pieboot.memhole; HDMI left off\n");
+		}
+		if (panel) {
+			printf("pieboot: panel: not with pieboot.addmem or pieboot.memhole; the panel left off\n");
+		}
 		return;
 	}
 	bootarg(fdt_args, fdt_args_size, "pieboot.hdmi=", opts, sizeof(opts));
 	bootarg(bundle_args, bundle_args_size, "pieboot.hdmi=", opts, sizeof(opts));
+	bootarg(fdt_args, fdt_args_size, "pieboot.panel=", panel_opts, sizeof(panel_opts));
+	bootarg(bundle_args, bundle_args_size, "pieboot.panel=", panel_opts, sizeof(panel_opts));
 
 	struct range ram[MAX_RAM_RANGES];
 	unsigned n = merge_ram(ram, fdt_memory(&m->fdt, ram, MAX_RAM_RANGES));
@@ -1553,8 +1563,17 @@ rk_display(struct machine *m, const char *fdt_args, size_t fdt_args_size, bool v
 			}
 		}
 	}
-	rk_hdmi(&m->fdt, opts[0] ? opts : NULL, verbose || bootflag(bundle_args, bundle_args_size, "-v"), end, busy, nbusy,
-	    fb, fb_size);
+	bool v = verbose || bootflag(bundle_args, bundle_args_size, "-v");
+	if (hdmi && rk_hdmi(&m->fdt, opts[0] ? opts : NULL, v, end, busy, nbusy, fb, fb_size)) {
+		if (panel) {
+			rk_panel_off(&m->fdt, panel_opts[0] ? panel_opts : NULL, v);
+		}
+		return;
+	}
+	if (panel) {
+		rk_panel(&m->fdt, panel_opts[0] ? panel_opts : NULL, v, (struct place_range){ top->base, end }, busy, nbusy,
+		    fb, fb_size);
+	}
 }
 
 void pieboot_main(void *fdt_blob);
@@ -1701,7 +1720,7 @@ pieboot_main(void *fdt_blob)
 		if (last->end == rk_fb + rk_fb_size && rk_fb > last->base) {
 			last->end = rk_fb;
 		} else {
-			printf("pieboot: HDMI: the framebuffer 0x%lx-0x%lx is not at the top of RAM; the kernel keeps it out as a hole\n",
+			printf("pieboot: the framebuffer 0x%lx-0x%lx is not at the top of RAM; the kernel keeps it out as a hole\n",
 			    rk_fb, rk_fb + rk_fb_size);
 		}
 	}

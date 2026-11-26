@@ -197,6 +197,39 @@ itself when a display is connected:
 - **Not done:** EDID, hot plug after boot, audio, and outputs other than
   HDMI.
 
+On those boards, when no HDMI display takes the console, `rkdsi.c` brings
+up a DSI panel that the device tree puts on video port 1, such as the
+Anbernic RG353V's:
+
+- **Panel data:** `pie,panel-*` nodes under the panel's node give each
+  panel the board may have: its ID, modes, link and init list. U-Boot adds
+  them with an overlay before it starts pieboot. pieboot reads the panel's
+  ID with DCS 0x04. The reply must begin with the chosen node's `pie,id`.
+  `pie,id` must be 1 to 3 bytes.
+  Panel commands require `lp-commands`; HS commands are untested.
+  `pie,bus-flags` is checked but not applied.
+  A panel or `pie,panel-*` node is used only when `status` is absent,
+  `"okay"` or `"ok"`.
+  With no usable nodes, pieboot skips bring-up and leaves the hardware as
+  found. A panel the boot loader left running stays as it was.
+- **Mode:** the panel's mode nearest 60 Hz.
+- **Path:** VPLL makes the pixel clock. The VOP2's video port 1 scans out
+  one window, Smart0. The DesignWare MIPI DSI host and the MIPI D-PHY send
+  the picture in video mode. Only DSI0 at `0xfe060000` and D-PHY0 at
+  `0xfe850000` are supported. A PWM drives the backlight.
+- **Framebuffer:** as for HDMI. The buffer must leave RAM below it in the
+  last range.
+- **Scanout:** with a framebuffer, video port 1 must advance before the
+  backlight comes on. pieboot samples its line counter for up to three
+  frame times.
+- **With HDMI:** HDMI takes the console when a display is connected, and
+  darkens the panel unless `off` is in `pieboot.panel` or no usable panel
+  data is present.
+- **Failure:** when bring-up fails after resetting the panel, pieboot
+  leaves it dark. It restores the VOP2 settings, shared clocks, routing,
+  resets and power domain.
+- **Steps:** with `-v`, as for HDMI.
+
 By default the screen is black with a pie in the middle, and pieboot's
 messages go only to the UART. The kernel gets `v_display` = 1, graphics
 mode, as from `boot.efi`: xnu keeps its text console off the screen, so
@@ -254,6 +287,16 @@ pieboot reads these from the FDT's `bootargs` and the bundle's:
   the console. Then the hardware is as without them. Read from the FDT's
   `bootargs` and the bundle's, which come last. HDMI stays off with
   `pieboot.addmem` or `pieboot.memhole`.
+- `pieboot.panel=LIST`: the DSI panel on RK3566 and RK3568 boards, a
+  comma-separated list of `off`; `dsibars`, the DSI host's colour bars
+  instead of a framebuffer; or `pattern`, a test image through Smart0.
+  The image has red, green, blue and yellow quadrants, a white corner and
+  a magenta bottom band. Its framebuffer is kept from the kernel but not
+  handed on. Neither console draws on it. `pattern` is ignored with
+  `dsibars`, with a message. `off` skips bring-up and leaves the hardware
+  as found. A panel the boot loader left running stays as it was. Read
+  from the FDT's `bootargs` and the bundle's, which come last. Bring-up is
+  also skipped with `pieboot.addmem` or `pieboot.memhole`.
 - `pieboot.ramcons=BASE,SIZE`: pieboot's console also goes to a RAM
   console there, in the layout of Linux's ramoops console zone, so that
   the next system can read it after a reset. The range must lie outside

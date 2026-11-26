@@ -41,10 +41,51 @@ vop2_win_port(uint32_t port_sel, unsigned win)
 	return (port_sel >> port_shift(win)) & 3;
 }
 
-bool
-vop2_overlay(uint32_t layer_sel, uint32_t port_sel, unsigned win, struct vop2_ovl *out)
+static bool
+in_place(const uint8_t *order, bool distinct, uint32_t layer_sel, uint32_t port_sel, unsigned vp, unsigned win,
+    struct vop2_ovl *out)
 {
-	if (!is_window(win)) {
+	unsigned mux0 = port_sel & 0xf, mux1 = (port_sel >> 4) & 0xf;
+	unsigned n0 = mux0 == PORT0_NONE ? 0 : mux0 + 1, first, count;
+	if (!distinct || n0 > LAYERS) {
+		return false;
+	}
+	if (vp == 0) {
+		first = 0;
+		count = n0;
+	} else {
+		if (mux1 >= LAYERS || mux1 + 1 <= n0) {
+			return false;
+		}
+		first = n0;
+		count = mux1 + 1 - n0;
+	}
+	if (count == 0) {
+		return false;
+	}
+	bool mine = false, consistent = true;
+	uint32_t off = 0;
+	for (unsigned i = first; i < first + count; i++) {
+		consistent = consistent && vop2_win_port(port_sel, order[i]) == vp;
+		if (order[i] == win) {
+			mine = true;
+		} else {
+			off |= 1u << order[i];
+		}
+	}
+	if (!mine || !consistent) {
+		return false;
+	}
+	out->layer_sel = layer_sel;
+	out->port_sel = port_sel;
+	out->off = off;
+	return true;
+}
+
+bool
+vop2_overlay_vp(uint32_t layer_sel, uint32_t port_sel, unsigned vp, unsigned win, struct vop2_ovl *out)
+{
+	if (vp > 1 || !is_window(win)) {
 		return false;
 	}
 	uint8_t order[LAYERS];
@@ -64,38 +105,21 @@ vop2_overlay(uint32_t layer_sel, uint32_t port_sel, unsigned win, struct vop2_ov
 			seen |= 1u << windows[i];
 		}
 	}
-
-	unsigned mux0 = port_sel & 0xf;
-	unsigned n0 = mux0 == PORT0_NONE ? 0 : mux0 + 1;
-	if (distinct && n0 >= 1 && n0 <= LAYERS) {
-		bool mine = false, consistent = true;
-		uint32_t off = 0;
-		for (unsigned i = 0; i < n0; i++) {
-			consistent = consistent && vop2_win_port(port_sel, order[i]) == 0;
-			if (order[i] == win) {
-				mine = true;
-			} else {
-				off |= 1u << order[i];
-			}
-		}
-		if (mine && consistent) {
-			out->layer_sel = layer_sel;
-			out->port_sel = port_sel;
-			out->off = off;
-			return true;
-		}
+	if (in_place(order, distinct, layer_sel, port_sel, vp, win, out)) {
+		return true;
 	}
 
-	uint8_t vp1[LAYERS], rest[LAYERS], spare[LAYERS];
-	unsigned n1 = 0, n2 = 0, ns = 0;
+	unsigned other = vp ^ 1;
+	uint8_t keep[LAYERS], rest[LAYERS], spare[LAYERS];
+	unsigned nk = 0, n2 = 0, ns = 0;
 	uint32_t off = 0;
 	for (unsigned i = 0; i < LAYERS; i++) {
 		unsigned w = order[i], port = vop2_win_port(port_sel, w);
 		if (w == win) {
 			continue;
 		}
-		if (port == 1) {
-			vp1[n1++] = (uint8_t)w;
+		if (port == other) {
+			keep[nk++] = (uint8_t)w;
 		} else if (port == 2) {
 			rest[n2++] = (uint8_t)w;
 		} else {
@@ -104,29 +128,43 @@ vop2_overlay(uint32_t layer_sel, uint32_t port_sel, unsigned win, struct vop2_ov
 		}
 	}
 	unsigned first_spare = 0;
-	if (n1 == 0) {
+	if (nk == 0) {
 		if (ns == 0) {
 			return false;
 		}
-		vp1[n1++] = spare[first_spare++];
+		keep[nk++] = spare[first_spare++];
 	}
 	for (unsigned i = first_spare; i < ns; i++) {
 		rest[n2++] = spare[i];
 	}
 
-	uint32_t layers = win, sel = 0;
-	unsigned slot = 1;
-	for (unsigned i = 0; i < n1; i++, slot++) {
-		layers |= (uint32_t)vp1[i] << (4 * slot);
-		sel |= 1u << port_shift(vp1[i]);
+	uint32_t layers = 0, sel = 0;
+	unsigned slot = 0;
+	if (vp == 0) {
+		layers |= (uint32_t)win << (4 * slot++);
+	}
+	for (unsigned i = 0; i < nk; i++, slot++) {
+		layers |= (uint32_t)keep[i] << (4 * slot);
+		sel |= other << port_shift(keep[i]);
+	}
+	if (vp == 1) {
+		layers |= (uint32_t)win << (4 * slot++);
+		sel |= 1u << port_shift(win);
 	}
 	for (unsigned i = 0; i < n2; i++, slot++) {
 		layers |= (uint32_t)rest[i] << (4 * slot);
 		sel |= 2u << port_shift(rest[i]);
 	}
+	unsigned mux0 = vp == 0 ? 0 : nk - 1, mux1 = nk;
 	out->layer_sel = layers | (layer_sel & ~0x00777777u);
 	out->port_sel = (port_sel & ~(PORT_SEL_SEL_MASK | PORT_SEL_MUX_MASK)) | sel |
-	    ((LAYERS - 1) << 8) | (n1 << 4);
+	    ((LAYERS - 1) << 8) | (mux1 << 4) | mux0;
 	out->off = off;
 	return true;
+}
+
+bool
+vop2_overlay(uint32_t layer_sel, uint32_t port_sel, unsigned win, struct vop2_ovl *out)
+{
+	return vop2_overlay_vp(layer_sel, port_sel, 0, win, out);
 }

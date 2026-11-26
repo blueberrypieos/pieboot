@@ -9,6 +9,8 @@ Files-Included:
  adt.c
  adt.h
  boot_args.h
+ dsipanel.c
+ dsipanel.h
  dwhdmi.c
  dwhdmi.h
  fallback.c
@@ -37,6 +39,8 @@ Files-Included:
  psci.h
  rkdisplay.c
  rkdisplay.h
+ rkdsi.c
+ rkdsi.h
  start.S
  uart.c
  uart.h

@@ -3,3 +3,5 @@ pieboot.elf
 pieboot.bin
 place-test
 vop2ovl-test
+dsipanel-test
+rkdsi-test

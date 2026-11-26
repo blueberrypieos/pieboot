@@ -5,6 +5,14 @@ pieboot (0.1.3) blueberry-pie-os; urgency=medium
     pieboot.hdmi= picks 1280x720, an AVI InfoFrame, colour bars or a
     sequence of test pictures. With -v, each step of the bring-up is
     printed before it starts, and the status once it runs.
+  * On RK3566 and RK3568 boards without an HDMI display, a DSI panel on
+    video port 1, such as the Anbernic RG353V's, shows pieboot's screen and
+    the kernel's console. The panel's answer to DCS 0x04 picks its init
+    list, mode and link from pie,panel-* nodes in the device tree. While
+    HDMI has the console, the panel is dark. pieboot.panel=off or no
+    usable panel data leaves the panel and its hardware as found, with
+    HDMI or without. dsibars shows the DSI host's colour bars. pattern
+    shows a test image through Smart0.
   * An unexpected exception at EL2 is printed with its fault address, and
     pieboot stops there.
   * Built with -mstrict-align. pieboot runs with the MMU off, where an
